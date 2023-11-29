@@ -55,6 +55,10 @@ endif
 
 APP_LOAD_PARAMS =  --curve ed25519 $(COMMON_LOAD_PARAMS) --path $(APPPATH)
 
+# Ledger: add the \"Pending security review\" disclaimer
+APP_LOAD_PARAMS += --tlvraw 9F:01
+DEFINES += HAVE_PENDING_REVIEW_SCREEN
+
 NANOS_STACK_SIZE := 2555
 include $(CURDIR)/../deps/ledger-zxlib/makefiles/Makefile.devices
 
