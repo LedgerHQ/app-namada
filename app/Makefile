@@ -42,7 +42,7 @@ ifeq ($(COIN),NAM)
 # Main app configuration
 DEFINES += APP_STANDARD
 APPNAME = "Namada"
-APPPATH = "44'/877'"
+APPPATH = "44'/877'" --path "44'/1'"
 
 else
 define error_message
@@ -77,9 +77,6 @@ INCLUDES_PATH += $(BOLOS_SDK)/lib_cxng/src
 .PHONY: rust
 rust:
 	@echo "No rust code"
-
-# Before linking, we need to be sure rust lib is there
-bin/app.elf: rust
 
 .PHONY: rust_clean
 rust_clean:
