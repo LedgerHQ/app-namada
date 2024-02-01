@@ -66,7 +66,7 @@ TEST(Address, NamadaEncoding) {
                                                 testcase.pubkey.c_str());
 
                 uint8_t actualAddress[ADDRESS_LEN_TESTNET] = {0};
-                const uint8_t address_len = crypto_encodePubkey_ed25519(actualAddress, sizeof(actualAddress), pubkey, true);
+                const uint8_t address_len = crypto_encodePubkey_ed25519(actualAddress, sizeof(actualAddress), pubkey);
                 EXPECT_EQ(address_len, ADDRESS_LEN_TESTNET);
 
                 const string namada_address(actualAddress, actualAddress + ADDRESS_LEN_TESTNET);
@@ -93,7 +93,7 @@ TEST(LEB128, LEB128Encoding) {
         for (const auto& testcase : leb128_encoding) {
                 uint8_t encoded[MAX_LEB128_OUTPUT] = {0};
                 uint8_t bytes = 0;
-                zxerr_t err = encodeLEB128(testcase.input, (uint8_t*) &encoded, MAX_LEB128_OUTPUT, &bytes);
+                const zxerr_t err = encodeLEB128(testcase.input, (uint8_t*) &encoded, MAX_LEB128_OUTPUT, &bytes);
 
                 ASSERT_EQ(err, zxerr_ok);
                 ASSERT_EQ(testcase.consumed, bytes);
