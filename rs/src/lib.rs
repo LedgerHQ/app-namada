@@ -30,11 +30,16 @@ use std::collections::HashMap;
 pub use ledger_zondax_generic::LedgerAppError;
 
 mod params;
-use params::SALT_LEN;
 pub use params::{
-    InstructionCode, ADDRESS_LEN, CLA, ED25519_PUBKEY_LEN, PK_LEN_PLUS_TAG, SIG_LEN_PLUS_TAG,
+    InstructionCode, KeyResponse, NamadaKeys, ADDRESS_LEN, CLA, ED25519_PUBKEY_LEN,
+    PK_LEN_PLUS_TAG, SIG_LEN_PLUS_TAG,
 };
-use utils::{ResponseAddress, ResponseSignature};
+use params::{KEY_LEN, SALT_LEN};
+use utils::{
+    ResponseAddress, ResponseGetConvertRandomness, ResponseGetOutputRandomness,
+    ResponseGetSpendRandomness, ResponseMaspSign, ResponseProofGenKey, ResponsePubAddress,
+    ResponseSignature, ResponseSpendSignature, ResponseViewKey,
+};
 
 use std::convert::TryInto;
 use std::str;
@@ -132,19 +137,22 @@ where
             }
         }
 
-        let mut public_key = [0; ED25519_PUBKEY_LEN + 1];
-        public_key.copy_from_slice(&response_data[..ED25519_PUBKEY_LEN + 1]);
-
-        let mut address_bytes = [0; ADDRESS_LEN];
-        address_bytes.copy_from_slice(&response_data[ED25519_PUBKEY_LEN + 1..]);
+        let (raw_public_key, rest) = response_data.split_at(ED25519_PUBKEY_LEN + 1);
+        let (public_key_len, rest) = rest.split_first().expect("response too short");
+        let (_public_key, rest) = rest.split_at((*public_key_len).into());
+        let (address_len, rest) = rest.split_first().expect("response too short");
+        let (address_bytes, rest) = rest.split_at((*address_len).into());
+        if rest.len() > 0 {
+            panic!("response too long");
+        }
 
         let address_str = str::from_utf8(&address_bytes)
             .map_err(|_| LedgerAppError::Utf8)?
             .to_owned();
 
         Ok(ResponseAddress {
-            public_key,
-            address_bytes,
+            public_key: raw_public_key.try_into().unwrap(),
+            address_bytes: address_bytes.try_into().unwrap(),
             address_str,
         })
     }
@@ -307,5 +315,329 @@ where
             .is_ok();
 
         raw_sig && wrapper_sig
+    }
+
+    /// Retrieve masp keys from the Namada app
+    pub async fn retrieve_keys(
+        &self,
+        path: &BIP44Path,
+        key_type: NamadaKeys,
+        require_confirmation: bool,
+    ) -> Result<KeyResponse, NamError<E::Error>> {
+        let serialized_path = path.serialize_path().unwrap();
+        let p1: u8 = if require_confirmation { 1 } else { 0 };
+
+        let p2: u8 = match key_type {
+            NamadaKeys::PublicAddress => 0,
+            NamadaKeys::ViewKey => 1,
+            NamadaKeys::ProofGenerationKey => 2,
+        };
+
+        let command = APDUCommand {
+            cla: CLA,
+            ins: InstructionCode::GetKeys as _,
+            p1,
+            p2,
+            data: serialized_path,
+        };
+
+        let response = self
+            .apdu_transport
+            .exchange(&command)
+            .await
+            .map_err(LedgerAppError::TransportError)?;
+
+        match response.error_code() {
+            Ok(APDUErrorCode::NoError) => {}
+            Ok(err) => {
+                return Err(NamError::Ledger(LedgerAppError::AppSpecific(
+                    err as _,
+                    err.description(),
+                )))
+            }
+            Err(err) => {
+                return Err(NamError::Ledger(LedgerAppError::AppSpecific(
+                    err,
+                    "[APDU_ERROR] Unknown".to_string(),
+                )))
+            }
+        }
+
+        let response_data = response.apdu_data();
+        match key_type {
+            NamadaKeys::PublicAddress => Ok(KeyResponse::Address(ResponsePubAddress {
+                public_address: response_data[..KEY_LEN].try_into().unwrap(),
+            })),
+            NamadaKeys::ViewKey => {
+                let (view_key, rest) = response_data.split_at(2 * KEY_LEN);
+                let (ovk, rest) = rest.split_at(KEY_LEN);
+                let (ivk, _) = rest.split_at(KEY_LEN);
+                let (dk, _) = rest.split_at(KEY_LEN);
+                Ok(KeyResponse::ViewKey(ResponseViewKey {
+                    view_key: view_key.try_into().unwrap(),
+                    ovk: ovk.try_into().unwrap(),
+                    ivk: ivk.try_into().unwrap(),
+                    dk: dk.try_into().unwrap(),
+                }))
+            }
+            NamadaKeys::ProofGenerationKey => {
+                let (ak, rest) = response_data.split_at(KEY_LEN);
+                let (nsk, _) = rest.split_at(KEY_LEN);
+                Ok(KeyResponse::ProofGenKey(ResponseProofGenKey {
+                    ak: ak.try_into().unwrap(),
+                    nsk: nsk.try_into().unwrap(),
+                }))
+            }
+        }
+    }
+
+    /// Get Randomness for Spend
+    pub async fn get_spend_randomness(
+        &self,
+    ) -> Result<ResponseGetSpendRandomness, NamError<E::Error>> {
+        let arr: &[u8] = &[];
+        let command = APDUCommand {
+            cla: CLA,
+            ins: InstructionCode::GetSpendRandomness as _,
+            p1: 0x00,
+            p2: 0x00,
+            data: arr, // Send empty data
+        };
+
+        let response = self
+            .apdu_transport
+            .exchange(&command)
+            .await
+            .map_err(LedgerAppError::TransportError)?;
+
+        match response.error_code() {
+            Ok(APDUErrorCode::NoError) => {}
+            Ok(err) => {
+                return Err(NamError::Ledger(LedgerAppError::AppSpecific(
+                    err as _,
+                    err.description(),
+                )))
+            }
+            Err(err) => {
+                return Err(NamError::Ledger(LedgerAppError::AppSpecific(
+                    err,
+                    "[APDU_ERROR] Unknown".to_string(),
+                )))
+            }
+        }
+
+        let response_data = response.apdu_data();
+        if response_data.len() < 2 * KEY_LEN {
+            return Err(NamError::Ledger(LedgerAppError::InvalidMessageSize));
+        }
+
+        let (rcv, rest) = response_data.split_at(KEY_LEN);
+        let (alpha, _) = rest.split_at(KEY_LEN);
+        Ok(ResponseGetSpendRandomness {
+            rcv: rcv.try_into().unwrap(),
+            alpha: alpha.try_into().unwrap(),
+        })
+    }
+
+    /// Get Randomness for convert
+    pub async fn get_convert_randomness(
+        &self,
+    ) -> Result<ResponseGetConvertRandomness, NamError<E::Error>> {
+        let arr: &[u8] = &[];
+        let command = APDUCommand {
+            cla: CLA,
+            ins: InstructionCode::GetConvertRandomness as _,
+            p1: 0x00,
+            p2: 0x00,
+            data: arr, // Send empty data
+        };
+
+        let response = self
+            .apdu_transport
+            .exchange(&command)
+            .await
+            .map_err(LedgerAppError::TransportError)?;
+
+        match response.error_code() {
+            Ok(APDUErrorCode::NoError) => {}
+            Ok(err) => {
+                return Err(NamError::Ledger(LedgerAppError::AppSpecific(
+                    err as _,
+                    err.description(),
+                )))
+            }
+            Err(err) => {
+                return Err(NamError::Ledger(LedgerAppError::AppSpecific(
+                    err,
+                    "[APDU_ERROR] Unknown".to_string(),
+                )))
+            }
+        }
+
+        let response_data = response.apdu_data();
+        if response_data.len() < KEY_LEN {
+            return Err(NamError::Ledger(LedgerAppError::InvalidMessageSize));
+        }
+
+        let (rcv, _) = response_data.split_at(KEY_LEN);
+        Ok(ResponseGetConvertRandomness {
+            rcv: rcv.try_into().unwrap(),
+        })
+    }
+
+    /// Get Randomness for output
+    pub async fn get_output_randomness(
+        &self,
+    ) -> Result<ResponseGetOutputRandomness, NamError<E::Error>> {
+        let arr: &[u8] = &[];
+        let command = APDUCommand {
+            cla: CLA,
+            ins: InstructionCode::GetOutputRandomness as _,
+            p1: 0x00,
+            p2: 0x00,
+            data: arr, // Send empty data
+        };
+
+        let response = self
+            .apdu_transport
+            .exchange(&command)
+            .await
+            .map_err(LedgerAppError::TransportError)?;
+
+        match response.error_code() {
+            Ok(APDUErrorCode::NoError) => {}
+            Ok(err) => {
+                return Err(NamError::Ledger(LedgerAppError::AppSpecific(
+                    err as _,
+                    err.description(),
+                )))
+            }
+            Err(err) => {
+                return Err(NamError::Ledger(LedgerAppError::AppSpecific(
+                    err,
+                    "[APDU_ERROR] Unknown".to_string(),
+                )))
+            }
+        }
+
+        let response_data = response.apdu_data();
+        if response_data.len() < 2 * KEY_LEN {
+            return Err(NamError::Ledger(LedgerAppError::InvalidMessageSize));
+        }
+
+        let (rcv, rest) = response_data.split_at(KEY_LEN);
+        let (rcm, _) = rest.split_at(KEY_LEN);
+        Ok(ResponseGetOutputRandomness {
+            rcv: rcv.try_into().unwrap(),
+            rcm: rcm.try_into().unwrap(),
+        })
+    }
+
+    /// Get Spend signature
+    pub async fn get_spend_signature(&self) -> Result<ResponseSpendSignature, NamError<E::Error>> {
+        let arr: &[u8] = &[];
+        let command = APDUCommand {
+            cla: CLA,
+            ins: InstructionCode::ExtractSpendSignature as _,
+            p1: 0x00,
+            p2: 0x00,
+            data: arr, // Send empty data
+        };
+
+        let response = self
+            .apdu_transport
+            .exchange(&command)
+            .await
+            .map_err(LedgerAppError::TransportError)?;
+
+        match response.error_code() {
+            Ok(APDUErrorCode::NoError) => {}
+            Ok(err) => {
+                return Err(NamError::Ledger(LedgerAppError::AppSpecific(
+                    err as _,
+                    err.description(),
+                )))
+            }
+            Err(err) => {
+                return Err(NamError::Ledger(LedgerAppError::AppSpecific(
+                    err,
+                    "[APDU_ERROR] Unknown".to_string(),
+                )))
+            }
+        }
+
+        let response_data = response.apdu_data();
+        if response_data.len() < 2 * KEY_LEN {
+            return Err(NamError::Ledger(LedgerAppError::InvalidMessageSize));
+        }
+
+        let (rbar, rest) = response_data.split_at(KEY_LEN);
+        let (sbar, _) = rest.split_at(KEY_LEN);
+        Ok(ResponseSpendSignature {
+            rbar: rbar.try_into().unwrap(),
+            sbar: sbar.try_into().unwrap(),
+        })
+    }
+
+    /// Sign Masp signing
+    pub async fn sign_masp_spends(
+        &self,
+        path: &BIP44Path,
+        blob: &[u8],
+    ) -> Result<ResponseMaspSign, NamError<E::Error>> {
+        let first_chunk = path.serialize_path().unwrap();
+
+        let start_command = APDUCommand {
+            cla: CLA,
+            ins: InstructionCode::SignMaspSpends as _,
+            p1: ChunkPayloadType::Init as u8,
+            p2: 0x00,
+            data: first_chunk,
+        };
+
+        let response =
+            <Self as AppExt<E>>::send_chunks(&self.apdu_transport, start_command, blob).await?;
+
+        match response.error_code() {
+            Ok(APDUErrorCode::NoError) => {}
+            Ok(err) => {
+                return Err(NamError::Ledger(LedgerAppError::AppSpecific(
+                    err as _,
+                    err.description(),
+                )))
+            }
+            Err(err) => {
+                return Err(NamError::Ledger(LedgerAppError::AppSpecific(
+                    err,
+                    "[APDU_ERROR] Unknown".to_string(),
+                )))
+            }
+        }
+
+        // Transactions is signed - Retrieve signatures
+        let rest = response.apdu_data();
+        let (hash, _) = rest.split_at(KEY_LEN);
+
+        Ok(ResponseMaspSign {
+            hash: hash.try_into().unwrap(),
+        })
+    }
+
+    /// Clean buffers
+    pub async fn clean_randomness_buffers(&self) -> Result<(), NamError<E::Error>> {
+        let arr: &[u8] = &[];
+        let command = APDUCommand {
+            cla: CLA,
+            ins: InstructionCode::CleanBuffers as _,
+            p1: ChunkPayloadType::Init as u8,
+            p2: 0x00,
+            data: arr, // Send empty data
+        };
+
+        self.apdu_transport
+            .exchange(&command)
+            .await
+            .map_err(LedgerAppError::TransportError)?;
+        Ok(())
     }
 }

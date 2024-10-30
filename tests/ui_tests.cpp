@@ -29,5 +29,6 @@ INSTANTIATE_TEST_SUITE_P
     ::testing::ValuesIn(GetJsonTestCases("testvectors.json")),
     JsonTestsA::PrintToStringParamName()
 );
+
 TEST_P(JsonTestsA, CheckUIOutput_CurrentTX_Normal) { check_testcase(GetParam(), false); }
 TEST_P(JsonTestsA, CheckUIOutput_CurrentTX_Expert) { check_testcase(GetParam(), true); }
