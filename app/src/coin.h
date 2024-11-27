@@ -1,5 +1,5 @@
 /*******************************************************************************
-*   (c) 2018 - 2022 Zondax AG
+*   (c) 2018 - 2024 Zondax AG
 *
 *  Licensed under the Apache License, Version 2.0 (the "License");
 *  you may not use this file except in compliance with the License.
@@ -35,6 +35,7 @@ extern "C" {
 #define COMPRESSED_SECP256K1_PK_LEN 33u
 #define SECP256K1_SK_LEN            32u
 #define SCALAR_LEN_SECP256K1        32u
+#define ETH_ADDRESS_LEN             20u
 
 #define SK_LEN_25519 32u
 #define SCALAR_LEN_ED25519 32u
@@ -50,9 +51,13 @@ extern "C" {
 #define PK_LEN_25519_PLUS_TAG 33u
 #define SIG_LEN_25519_PLUS_TAG 65u
 
+#define ADDRESS_LEN_BYTES   21
 
-#define ADDRESS_LEN_MAINNET 42u
-#define ADDRESS_LEN_TESTNET 45u
+#define ADDRESS_LEN_MAINNET 45u
+#define PUBKEY_LEN_MAINNET 66u
+
+#define ADDRESS_LEN_TESTNET 49u
+#define PUBKEY_LEN_TESTNET 70u
 
 #define SALT_LEN     8
 #define HASH_LEN    32
@@ -60,6 +65,7 @@ extern "C" {
 #define SIG_S_LEN   32
 #define SIG_ED25519_LEN (SIG_R_LEN + SIG_S_LEN)
 #define SIG_SECP256K1_LEN 65
+#define MASP_SIG_LEN 64
 
 #define MAX_BECH32_HRP_LEN  83u
 
@@ -83,28 +89,27 @@ typedef enum {
 } signing_key_type_e;
 
 typedef enum {
-    addr_masp_transparent_secp256k1 = 0,
-    addr_masp_shielded = 1, // was addr_sapling
-    addr_masp_shielded_div = 2,
-} address_kind_e;
+    PublicAddress = 0,
+    ViewKeys = 1,
+    ProofGenerationKey = 2,
+    InvalidKey,
+} key_kind_e;
 
 typedef enum {
-    key_ivk = 0,
-    key_ovk = 1,
-    key_fvk = 2,
-    nf = 3
-} key_type_e;
+    spend = 0,
+    output,
+    convert
+} masp_type_e;
 
-#define INS_SIGN_WRAPPER                0x02
+#define INS_GET_KEYS                    0x03
+#define INS_GET_SPEND_RAND              0x04
+#define INS_GET_OUTPUT_RAND             0x05
+#define INS_GET_CONVERT_RAND            0x06
+#define INS_SIGN_MASP_SPENDS            0x07
+#define INS_EXTRACT_SPEND_SIGN          0x08
+#define INS_CLEAN_BUFFERS               0x09
 
-#define INS_GET_SHIELDED_ADDRESS 0x10
-#define INS_INIT_MASP_TRANSFER 0xe0
-#define INS_GET_IVK 0xf0
-#define INS_GET_OVK 0xf1
-#define INS_GET_NF 0xf2
-
-#define INS_GET_SIGNATURE 0x0A
-
+#define APDU_CODE_CHECK_SIGN_TR_FAIL 0x6999
 #ifdef __cplusplus
 }
 #endif

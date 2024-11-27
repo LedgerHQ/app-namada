@@ -1,5 +1,5 @@
 /*******************************************************************************
-*   (c) 2018 - 2022 Zondax AG
+*   (c) 2018 - 2024 Zondax AG
 *   (c) 2016 Ledger
 *
 *  Licensed under the Apache License, Version 2.0 (the "License");
@@ -29,9 +29,9 @@
 #include "addr.h"
 #include "crypto.h"
 #include "coin.h"
-#include "transparent.h"
 #include "zxmacros.h"
 #include "view_internal.h"
+#include "review_keys.h"
 
 static bool tx_initialized = false;
 
@@ -111,6 +111,7 @@ __Z_INLINE void handleSignTransaction(volatile uint32_t *flags, volatile uint32_
     CHECK_APP_CANARY()
 
     if (error_msg != NULL) {
+        transaction_reset();
         const int error_msg_length = strnlen(error_msg, sizeof(G_io_apdu_buffer));
         memcpy(G_io_apdu_buffer, error_msg, error_msg_length);
         *tx += (error_msg_length);
@@ -120,6 +121,7 @@ __Z_INLINE void handleSignTransaction(volatile uint32_t *flags, volatile uint32_
     CHECK_APP_CANARY()
     view_review_init(tx_getItem, tx_getNumItems, app_sign);
     view_review_show(REVIEW_TXN);
+    transaction_reset();
     *flags |= IO_ASYNCH_REPLY;
 }
 
@@ -136,14 +138,100 @@ __Z_INLINE void handleGetAddr(volatile uint32_t *flags, volatile uint32_t *tx, u
         THROW(APDU_CODE_DATA_INVALID);
     }
     if (requireConfirmation) {
-        view_review_init(addr_getItem, addr_getNumItems, app_reply_address);
+        view_review_init(addr_getItem, addr_getNumItems, app_reply_cmd);
         view_review_show(REVIEW_ADDRESS);
         *flags |= IO_ASYNCH_REPLY;
         return;
     }
-    *tx = action_addrResponse.len;
+    *tx = cmdResponseLen;
     THROW(APDU_CODE_OK);
 }
+#if defined(COMPILE_MASP)
+__Z_INLINE void handleSignMaspSpends(volatile uint32_t *flags, volatile uint32_t *tx, uint32_t rx) {
+    ZEMU_LOGF(50, "handleSignMaspSpends\n")
+    if (!process_chunk(tx, rx)) {
+        THROW(APDU_CODE_OK);
+    }
+    CHECK_APP_CANARY()
+
+    const char *error_msg = tx_parse();
+    CHECK_APP_CANARY()
+
+    if (error_msg != NULL) {
+        transaction_reset();
+        const int error_msg_length = strnlen(error_msg, sizeof(G_io_apdu_buffer));
+        memcpy(G_io_apdu_buffer, error_msg, error_msg_length);
+        *tx += (error_msg_length);
+        THROW(APDU_CODE_DATA_INVALID);
+    }
+
+    CHECK_APP_CANARY()
+    view_review_init(tx_getItem, tx_getNumItems, app_sign_masp_spends);
+    view_review_show(REVIEW_TXN);
+    *flags |= IO_ASYNCH_REPLY;
+}
+
+__Z_INLINE void handleGetKeys(volatile uint32_t *flags, volatile uint32_t *tx, uint32_t rx) {
+    extractHDPath(rx, OFFSET_DATA);
+    if (G_io_apdu_buffer[OFFSET_P2] >= InvalidKey) {
+        THROW(APDU_CODE_INVALIDP1P2);
+    }
+
+    const uint8_t requireConfirmation = G_io_apdu_buffer[OFFSET_P1];
+    const key_kind_e requestedKeys = (key_kind_e) G_io_apdu_buffer[OFFSET_P2];
+
+    // ViewKey will require explicit user confirmation to leave the device
+    if (!requireConfirmation && requestedKeys == ViewKeys) {
+        THROW(APDU_CODE_INVALIDP1P2);
+    }
+
+    zxerr_t zxerr = app_fill_keys(requestedKeys);
+    if (zxerr != zxerr_ok) {
+        *tx = 0;
+        THROW(APDU_CODE_DATA_INVALID);
+    }
+
+    if (requireConfirmation) {
+        review_keys_menu(requestedKeys);
+        *flags |= IO_ASYNCH_REPLY;
+        return;
+    }
+
+    *tx = cmdResponseLen;
+    THROW(APDU_CODE_OK);
+}
+
+__Z_INLINE void handleComputeMaspRand(__Z_UNUSED volatile uint32_t *flags, volatile uint32_t *tx, __Z_UNUSED uint32_t rx, masp_type_e type) {
+    *tx = 0;
+    zxerr_t zxerr = app_fill_randomness(type);
+    if (zxerr != zxerr_ok) {
+        transaction_reset();
+        *tx = 0;
+        THROW(APDU_CODE_DATA_INVALID);
+    }
+    *tx = cmdResponseLen;
+    THROW(APDU_CODE_OK);
+}
+
+__Z_INLINE void handleExtractSpendSign(__Z_UNUSED volatile uint32_t *flags, volatile uint32_t *tx, __Z_UNUSED uint32_t rx) {
+    *tx = 0;
+    zxerr_t zxerr = app_fill_spend_sig();
+    
+    if (zxerr != zxerr_ok) {
+        *tx = 0;
+        THROW(APDU_CODE_DATA_INVALID);
+    }
+    *tx = cmdResponseLen;
+    THROW(APDU_CODE_OK);
+}
+
+__Z_INLINE void handleCleanRandomnessBuffers(__Z_UNUSED volatile uint32_t *flags, volatile uint32_t *tx, __Z_UNUSED uint32_t rx) {
+    *tx = 0;
+    transaction_reset();
+    THROW(APDU_CODE_OK);
+}
+
+#endif
 
 __Z_INLINE void handle_getversion(__Z_UNUSED volatile uint32_t *flags, volatile uint32_t *tx)
 {
@@ -212,9 +300,50 @@ void handleApdu(volatile uint32_t *flags, volatile uint32_t *tx, uint32_t rx) {
                     handleSignTransaction(flags, tx, rx);
                     break;
                 }
+#if defined(COMPILE_MASP)
+                case INS_GET_KEYS: {
+                    CHECK_PIN_VALIDATED()
+                    handleGetKeys(flags, tx, rx);
+                    break;
+                }
 
+                case INS_GET_SPEND_RAND: {
+                    CHECK_PIN_VALIDATED()
+                    handleComputeMaspRand(flags, tx, rx, spend);
+                    break;
+                }
+
+                case INS_GET_OUTPUT_RAND: {
+                    CHECK_PIN_VALIDATED()
+                    handleComputeMaspRand(flags, tx, rx, output);
+                    break;
+                }
+
+                case INS_GET_CONVERT_RAND: {
+                    CHECK_PIN_VALIDATED()
+                    handleComputeMaspRand(flags, tx, rx, convert);
+                    break;
+                }
+
+                case INS_SIGN_MASP_SPENDS: {
+                    CHECK_PIN_VALIDATED()
+                    handleSignMaspSpends(flags, tx, rx);
+                    break;
+                }
+
+                case INS_EXTRACT_SPEND_SIGN: {
+                    CHECK_PIN_VALIDATED()
+                    handleExtractSpendSign(flags, tx, rx);
+                    break;
+                }
+                case INS_CLEAN_BUFFERS: {
+                    CHECK_PIN_VALIDATED()
+                    handleCleanRandomnessBuffers(flags, tx, rx);
+                    break;
+                }
+#endif
 #if defined(APP_TESTING)
-                    case INS_TEST: {
+                case INS_TEST: {
                     handleTest(flags, tx, rx);
                     THROW(APDU_CODE_OK);
                     break;
