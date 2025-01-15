@@ -24,8 +24,13 @@
 #include "parser_address.h"
 #include "bech32_encoding.h"
 #include "crypto_helper.h"
+#include "parser_impl.h"
 
 #include "txn_delegation.h"
+
+#ifdef LEDGER_SPECIFIC
+#include "crypto.h"
+#endif
 
 static parser_error_t printBondTxn( const parser_context_t *ctx,
                                     uint8_t displayIdx,
@@ -37,7 +42,7 @@ static parser_error_t printBondTxn( const parser_context_t *ctx,
     if (ctx->tx_obj->bond.has_source == 0 && displayIdx >= 1) {
         displayIdx++;
     }
-    const bool hasMemo = ctx->tx_obj->transaction.header.memoSection != NULL;
+    const bool hasMemo = hasMemoToPrint(ctx);
     if (displayIdx >= 4 && !hasMemo) {
         displayIdx++;
     }
@@ -90,7 +95,7 @@ static parser_error_t printResignSteward( const parser_context_t *ctx,
                                         char *outKey, uint16_t outKeyLen,
                                         char *outVal, uint16_t outValLen,
                                         uint8_t pageIdx, uint8_t *pageCount) {
-    const bool hasMemo = ctx->tx_obj->transaction.header.memoSection != NULL;
+    const bool hasMemo = hasMemoToPrint(ctx);
     if (displayIdx >= 2 && !hasMemo) {
         displayIdx++;
     }
@@ -144,7 +149,7 @@ static parser_error_t getOutputfromIndex(uint32_t index, bytes_t *out) {
         } else {
             out->ptr++;
         }
-        out->ptr += DIVERSIFIER_LEN + PAYMENT_ADDR_LEN + OUT_NOTE_LEN + MEMO_LEN;
+        out->ptr += PAYMENT_ADDR_LEN + OUT_NOTE_LEN + MEMO_LEN;
     }
 
     return parser_ok;
@@ -328,12 +333,23 @@ static parser_error_t printTransferTxn( const parser_context_t *ctx,
             break;
         } case 10:
             snprintf(outKey, outKeyLen, "Destination");
-            CHECK_ERROR(crypto_encodeLargeBech32(out.ptr + (out.ptr[0] ? 33 : 1), PAYMENT_ADDR_LEN + DIVERSIFIER_LEN, (uint8_t*) tmp_buf, sizeof(tmp_buf), 1));
+#if defined(COMPILE_MASP)
+#ifndef LEDGER_SPECIFIC
+            uint8_t change_address[PAYMENT_ADDR_LEN] = {0x4e, 0x71, 0x48, 0xcb, 0xd2, 0xfe, 0xce, 0x3a, 0xd9, 0x30, 0x1e, 0xba, 0xe4, 0x08, 0x51, 0xd1, 0x72, 0x39, 0x5d, 0x12, 0xf0, 0xd9, 0x0c, 0x2c, 0x1e, 0x01, 0xcd, 0x3c, 0x47, 0x5d, 0x59, 0xff, 0xf5, 0xe2, 0x6d, 0x21, 0x12, 0x50, 0xd8, 0xe9, 0xb6, 0x12, 0x3a};
+#endif
+            if(!app_mode_expert()) {
+                if(MEMCMP(out.ptr + (out.ptr[0] ? OVK_PLUS_CHECK_BYTE : 1), change_address, PAYMENT_ADDR_LEN) == 0) {
+                    snprintf(outVal, outValLen, "Self");
+                    break;
+                }
+            }
+#endif
+            CHECK_ERROR(crypto_encodeLargeBech32(out.ptr + (out.ptr[0] ? OVK_PLUS_CHECK_BYTE : 1), PAYMENT_ADDR_LEN, (uint8_t*) tmp_buf, sizeof(tmp_buf), 1));
             pageString(outVal, outValLen, (const char*) tmp_buf, pageIdx, pageCount);
             break;
         case 11:
             snprintf(outKey, outKeyLen, "Receiving Token");
-            rtoken = out.ptr + (out.ptr[0] ? 33 : 1) + PAYMENT_ADDR_LEN + DIVERSIFIER_LEN;
+            rtoken = out.ptr + (out.ptr[0] ? OVK_PLUS_CHECK_BYTE : 1) + PAYMENT_ADDR_LEN;
             CHECK_ERROR(findAssetData(&ctx->tx_obj->transaction.sections.maspBuilder, rtoken, &asset_data, &asset_idx))
             if(asset_idx < ctx->tx_obj->transaction.sections.maspBuilder.n_asset_type) {
                 CHECK_ERROR(printAddressAlt(&asset_data.token, outVal, outValLen, pageIdx, pageCount))
@@ -344,8 +360,8 @@ static parser_error_t printTransferTxn( const parser_context_t *ctx,
             break;
         case 12: {
             snprintf(outKey, outKeyLen, "Receiving Amount");
-            rtoken = out.ptr + (out.ptr[0] ? 33 : 1) + PAYMENT_ADDR_LEN + DIVERSIFIER_LEN;
-            amount = out.ptr + (out.ptr[0] ? 33 : 1) + PAYMENT_ADDR_LEN + DIVERSIFIER_LEN + ASSET_ID_LEN;
+            rtoken = out.ptr + (out.ptr[0] ? OVK_PLUS_CHECK_BYTE : 1) + PAYMENT_ADDR_LEN;
+            amount = out.ptr + (out.ptr[0] ? OVK_PLUS_CHECK_BYTE : 1) + PAYMENT_ADDR_LEN + ASSET_ID_LEN;
             CHECK_ERROR(findAssetData(&ctx->tx_obj->transaction.sections.maspBuilder, rtoken, &asset_data, &asset_idx))
             if(asset_idx < ctx->tx_obj->transaction.sections.maspBuilder.n_asset_type) {
                 MEMCPY(tmp_amount + (asset_data.position * sizeof(uint64_t)), amount, sizeof(uint64_t));
@@ -413,7 +429,7 @@ static parser_error_t printInitAccountTxn(  const parser_context_t *ctx,
                 ? pubkeys_first_field_idx
                 : displayIdx - pubkeys_num + 1);
 
-    const bool hasMemo = ctx->tx_obj->transaction.header.memoSection != NULL;
+    const bool hasMemo = hasMemoToPrint(ctx);
     if (adjustedDisplayIdx >= 4 && !hasMemo) {
         adjustedDisplayIdx++;
     }
@@ -505,7 +521,7 @@ static parser_error_t printInitProposalTxn(  const parser_context_t *ctx,
     if (displayIdx >= 1 + proposalElements) {
         adjustedIdx = displayIdx - proposalElements + 1;
     }
-    const bool hasMemo = ctx->tx_obj->transaction.header.memoSection != NULL;
+    const bool hasMemo = hasMemoToPrint(ctx);
     if (adjustedIdx >= 7 && !hasMemo) {
         adjustedIdx++;
     }
@@ -581,7 +597,7 @@ static parser_error_t printVoteProposalTxn(  const parser_context_t *ctx,
                                              uint8_t pageIdx, uint8_t *pageCount) {
     tx_vote_proposal_t *voteProposal = &ctx->tx_obj->voteProposal;
 
-    const bool hasMemo = ctx->tx_obj->transaction.header.memoSection != NULL;
+    const bool hasMemo = hasMemoToPrint(ctx);
     if (displayIdx >= 4 && !hasMemo) {
         displayIdx++;
     }
@@ -648,7 +664,7 @@ static parser_error_t printRevealPubkeyTxn(  const parser_context_t *ctx,
                                             char *outVal, uint16_t outValLen,
                                             uint8_t pageIdx, uint8_t *pageCount) {
 
-    const bool hasMemo = ctx->tx_obj->transaction.header.memoSection != NULL;
+    const bool hasMemo = hasMemoToPrint(ctx);
     if (displayIdx >= 2 && !hasMemo) {
         displayIdx++;
     }
@@ -687,7 +703,7 @@ static parser_error_t printChangeConsensusKeyTxn( const parser_context_t *ctx,
                                         char *outKey, uint16_t outKeyLen,
                                         char *outVal, uint16_t outValLen,
                                                   uint8_t pageIdx, uint8_t *pageCount) {
-    const bool hasMemo = ctx->tx_obj->transaction.header.memoSection != NULL;
+    const bool hasMemo = hasMemoToPrint(ctx);
     if (displayIdx >= 3 && !hasMemo) {
         displayIdx++;
     }
@@ -729,7 +745,7 @@ static parser_error_t printUnjailValidatorTxn(const parser_context_t *ctx,
                                             char *outKey, uint16_t outKeyLen,
                                             char *outVal, uint16_t outValLen,
                                             uint8_t pageIdx, uint8_t *pageCount) {
-    const bool hasMemo = ctx->tx_obj->transaction.header.memoSection != NULL;
+    const bool hasMemo = hasMemoToPrint(ctx);
     if (displayIdx >= 2 && !hasMemo) {
         displayIdx++;
     }
@@ -766,7 +782,7 @@ static parser_error_t printActivateValidator(const parser_context_t *ctx,
                                             char *outKey, uint16_t outKeyLen,
                                             char *outVal, uint16_t outValLen,
                                             uint8_t pageIdx, uint8_t *pageCount) {
-    const bool hasMemo = ctx->tx_obj->transaction.header.memoSection != NULL;
+    const bool hasMemo = hasMemoToPrint(ctx);
     if (displayIdx >= 2 && !hasMemo) {
         displayIdx++;
     }
@@ -900,23 +916,23 @@ static parser_error_t printBecomeValidatorTxn(  const parser_context_t *ctx,
                                               char *outVal, uint16_t outValLen,
                                               uint8_t pageIdx, uint8_t *pageCount) {
 
-    if(displayIdx >= 9 && ctx->tx_obj->becomeValidator.name.ptr == NULL) {
+    if(displayIdx >= 9 && !ctx->tx_obj->becomeValidator.has_name) {
         displayIdx++;
     }
-    if(displayIdx >= 10 && ctx->tx_obj->becomeValidator.description.ptr == NULL) {
+    if(displayIdx >= 10 && !ctx->tx_obj->becomeValidator.has_description) {
         displayIdx++;
     }
-    if(displayIdx >= 11 && ctx->tx_obj->becomeValidator.website.ptr == NULL) {
+    if(displayIdx >= 11 && !ctx->tx_obj->becomeValidator.has_website) {
         displayIdx++;
     }
-    if(displayIdx >= 12 && ctx->tx_obj->becomeValidator.discord_handle.ptr == NULL) {
+    if(displayIdx >= 12 && !ctx->tx_obj->becomeValidator.has_discord_handle) {
         displayIdx++;
     }
-    if(displayIdx >= 13 && ctx->tx_obj->becomeValidator.avatar.ptr == NULL) {
+    if(displayIdx >= 13 && !ctx->tx_obj->becomeValidator.has_avatar) {
         displayIdx++;
     }
 
-    const bool hasMemo = ctx->tx_obj->transaction.header.memoSection != NULL;
+    const bool hasMemo = hasMemoToPrint(ctx);
     if (displayIdx >= 14 && !hasMemo) {
         displayIdx++;
     }
@@ -979,12 +995,14 @@ static parser_error_t printBecomeValidatorTxn(  const parser_context_t *ctx,
         }
         case 9: {
             snprintf(outKey, outKeyLen, "Name");
-            pageStringExt(outVal, outValLen, (const char*)ctx->tx_obj->becomeValidator.name.ptr, ctx->tx_obj->becomeValidator.name.len, pageIdx, pageCount);
+            snprintf(outVal, outValLen, "");
+            if (ctx->tx_obj->becomeValidator.name.len > 0) {
+                pageStringExt(outVal, outValLen, (const char*)ctx->tx_obj->becomeValidator.name.ptr, ctx->tx_obj->becomeValidator.name.len, pageIdx, pageCount);
+            }
             break;
         }
         case 10: {
             snprintf(outKey, outKeyLen, "Description");
-            // snprintf(outVal, outValLen, "(none)");
             snprintf(outVal, outValLen, "");
             if (ctx->tx_obj->becomeValidator.description.len > 0) {
                 pageStringExt(outVal, outValLen, (const char*)ctx->tx_obj->becomeValidator.description.ptr, ctx->tx_obj->becomeValidator.description.len, pageIdx, pageCount);
@@ -993,17 +1011,26 @@ static parser_error_t printBecomeValidatorTxn(  const parser_context_t *ctx,
         }
         case 11: {
             snprintf(outKey, outKeyLen, "Website");
-            pageStringExt(outVal, outValLen, (const char*)ctx->tx_obj->becomeValidator.website.ptr, ctx->tx_obj->becomeValidator.website.len, pageIdx, pageCount);
+            snprintf(outVal, outValLen, "");
+            if (ctx->tx_obj->becomeValidator.website.len > 0) {
+                pageStringExt(outVal, outValLen, (const char*)ctx->tx_obj->becomeValidator.website.ptr, ctx->tx_obj->becomeValidator.website.len, pageIdx, pageCount);
+            }
             break;
         }
         case 12: {
             snprintf(outKey, outKeyLen, "Discord handle");
-            pageStringExt(outVal, outValLen, (const char*)ctx->tx_obj->becomeValidator.discord_handle.ptr, ctx->tx_obj->becomeValidator.discord_handle.len, pageIdx, pageCount);
+            snprintf(outVal, outValLen, "");
+            if (ctx->tx_obj->becomeValidator.discord_handle.len > 0) {
+                pageStringExt(outVal, outValLen, (const char*)ctx->tx_obj->becomeValidator.discord_handle.ptr, ctx->tx_obj->becomeValidator.discord_handle.len, pageIdx, pageCount);
+            }
             break;
         }
         case 13: {
             snprintf(outKey, outKeyLen, "Avatar");
-            pageStringExt(outVal, outValLen, (const char*)ctx->tx_obj->becomeValidator.avatar.ptr, ctx->tx_obj->becomeValidator.avatar.len, pageIdx, pageCount);
+            snprintf(outVal, outValLen, "");
+            if (ctx->tx_obj->becomeValidator.avatar.len > 0) {
+                pageStringExt(outVal, outValLen, (const char*)ctx->tx_obj->becomeValidator.avatar.ptr, ctx->tx_obj->becomeValidator.avatar.len, pageIdx, pageCount);
+            }
             break;
         }
         case 14:
@@ -1033,7 +1060,7 @@ static parser_error_t printWithdrawTxn( const parser_context_t *ctx,
     if (ctx->tx_obj->withdraw.has_source == 0 && displayIdx >= 1) {
         displayIdx++;
     }
-    const bool hasMemo = ctx->tx_obj->transaction.header.memoSection != NULL;
+    const bool hasMemo = hasMemoToPrint(ctx);
     if (displayIdx >= 3 && !hasMemo) {
         displayIdx++;
     }
@@ -1084,7 +1111,7 @@ static parser_error_t printCommissionChangeTxn( const parser_context_t *ctx,
                                                 char *outVal, uint16_t outValLen,
                                                 uint8_t pageIdx, uint8_t *pageCount) {
 
-    const bool hasMemo = ctx->tx_obj->transaction.header.memoSection != NULL;
+    const bool hasMemo = hasMemoToPrint(ctx);
     if (displayIdx >= 3 && !hasMemo) {
         displayIdx++;
     }
@@ -1347,12 +1374,23 @@ static parser_error_t printIBCTxn( const parser_context_t *ctx,
             break;
         } case 18:
             snprintf(outKey, outKeyLen, "Destination");
-            CHECK_ERROR(crypto_encodeLargeBech32(out.ptr + (out.ptr[0] ? 33 : 1), PAYMENT_ADDR_LEN + DIVERSIFIER_LEN, (uint8_t*) tmp_buf, sizeof(tmp_buf), 1));
+#if defined(COMPILE_MASP)
+#ifndef LEDGER_SPECIFIC
+            uint8_t change_address[PAYMENT_ADDR_LEN] = {0x4e, 0x71, 0x48, 0xcb, 0xd2, 0xfe, 0xce, 0x3a, 0xd9, 0x30, 0x1e, 0xba, 0xe4, 0x08, 0x51, 0xd1, 0x72, 0x39, 0x5d, 0x12, 0xf0, 0xd9, 0x0c, 0x2c, 0x1e, 0x01, 0xcd, 0x3c, 0x47, 0x5d, 0x59, 0xff, 0xf5, 0xe2, 0x6d, 0x21, 0x12, 0x50, 0xd8, 0xe9, 0xb6, 0x12, 0x3a};
+#endif
+            if(!app_mode_expert()) {
+                if(MEMCMP(out.ptr + (out.ptr[0] ? OVK_PLUS_CHECK_BYTE : 1), change_address, PAYMENT_ADDR_LEN) == 0) {
+                    snprintf(outVal, outValLen, "Self");
+                    break;
+                }
+            }
+#endif
+            CHECK_ERROR(crypto_encodeLargeBech32(out.ptr + (out.ptr[0] ? OVK_PLUS_CHECK_BYTE : 1), PAYMENT_ADDR_LEN, (uint8_t*) tmp_buf, sizeof(tmp_buf), 1));
             pageString(outVal, outValLen, (const char*) tmp_buf, pageIdx, pageCount);
             break;
         case 19:
             snprintf(outKey, outKeyLen, "Receiving Token");
-            rtoken = out.ptr + (out.ptr[0] ? 33 : 1) + PAYMENT_ADDR_LEN + DIVERSIFIER_LEN;
+            rtoken = out.ptr + (out.ptr[0] ? OVK_PLUS_CHECK_BYTE : 1) + PAYMENT_ADDR_LEN;
             CHECK_ERROR(findAssetData(&ctx->tx_obj->transaction.sections.maspBuilder, rtoken, &asset_data, &asset_idx))
             if(asset_idx < ctx->tx_obj->transaction.sections.maspBuilder.n_asset_type) {
                 CHECK_ERROR(printAddressAlt(&asset_data.token, outVal, outValLen, pageIdx, pageCount))
@@ -1363,8 +1401,8 @@ static parser_error_t printIBCTxn( const parser_context_t *ctx,
             break;
         case 20: {
             snprintf(outKey, outKeyLen, "Receiving Amount");
-            rtoken = out.ptr + (out.ptr[0] ? 33 : 1) + PAYMENT_ADDR_LEN + DIVERSIFIER_LEN;
-            amount = out.ptr + (out.ptr[0] ? 33 : 1) + PAYMENT_ADDR_LEN + DIVERSIFIER_LEN + ASSET_ID_LEN;
+            rtoken = out.ptr + (out.ptr[0] ? OVK_PLUS_CHECK_BYTE : 1) + PAYMENT_ADDR_LEN;
+            amount = out.ptr + (out.ptr[0] ? OVK_PLUS_CHECK_BYTE : 1) + PAYMENT_ADDR_LEN + ASSET_ID_LEN;
             CHECK_ERROR(findAssetData(&ctx->tx_obj->transaction.sections.maspBuilder, rtoken, &asset_data, &asset_idx))
             if(asset_idx < ctx->tx_obj->transaction.sections.maspBuilder.n_asset_type) {
                 MEMCPY(tmp_amount + (asset_data.position * sizeof(uint64_t)), amount, sizeof(uint64_t));
@@ -1670,12 +1708,23 @@ static parser_error_t printNFTIBCTxn( const parser_context_t *ctx,
             break;
         } case 19:
             snprintf(outKey, outKeyLen, "Destination");
-            CHECK_ERROR(crypto_encodeLargeBech32(out.ptr + (out.ptr[0] ? 33 : 1), PAYMENT_ADDR_LEN + DIVERSIFIER_LEN, (uint8_t*) tmp_buf, sizeof(tmp_buf), 1));
+#if defined(COMPILE_MASP)
+#ifndef LEDGER_SPECIFIC
+            uint8_t change_address[PAYMENT_ADDR_LEN] = {0x4e, 0x71, 0x48, 0xcb, 0xd2, 0xfe, 0xce, 0x3a, 0xd9, 0x30, 0x1e, 0xba, 0xe4, 0x08, 0x51, 0xd1, 0x72, 0x39, 0x5d, 0x12, 0xf0, 0xd9, 0x0c, 0x2c, 0x1e, 0x01, 0xcd, 0x3c, 0x47, 0x5d, 0x59, 0xff, 0xf5, 0xe2, 0x6d, 0x21, 0x12, 0x50, 0xd8, 0xe9, 0xb6, 0x12, 0x3a};
+#endif
+            if(!app_mode_expert()) {
+                if(MEMCMP(out.ptr + (out.ptr[0] ? OVK_PLUS_CHECK_BYTE : 1), change_address, PAYMENT_ADDR_LEN) == 0) {
+                    snprintf(outVal, outValLen, "Self");
+                    break;
+                }
+            }
+#endif
+            CHECK_ERROR(crypto_encodeLargeBech32(out.ptr + (out.ptr[0] ? OVK_PLUS_CHECK_BYTE : 1), PAYMENT_ADDR_LEN, (uint8_t*) tmp_buf, sizeof(tmp_buf), 1));
             pageString(outVal, outValLen, (const char*) tmp_buf, pageIdx, pageCount);
             break;
         case 20:
             snprintf(outKey, outKeyLen, "Receiving Token");
-            rtoken = out.ptr + (out.ptr[0] ? 33 : 1) + PAYMENT_ADDR_LEN + DIVERSIFIER_LEN;
+            rtoken = out.ptr + (out.ptr[0] ? OVK_PLUS_CHECK_BYTE : 1) + PAYMENT_ADDR_LEN;
             CHECK_ERROR(findAssetData(&ctx->tx_obj->transaction.sections.maspBuilder, rtoken, &asset_data, &asset_idx))
             if(asset_idx < ctx->tx_obj->transaction.sections.maspBuilder.n_asset_type) {
                 CHECK_ERROR(printAddressAlt(&asset_data.token, outVal, outValLen, pageIdx, pageCount))
@@ -1686,8 +1735,8 @@ static parser_error_t printNFTIBCTxn( const parser_context_t *ctx,
             break;
         case 21: {
             snprintf(outKey, outKeyLen, "Receiving Amount");
-            rtoken = out.ptr + (out.ptr[0] ? 33 : 1) + PAYMENT_ADDR_LEN + DIVERSIFIER_LEN;
-            amount = out.ptr + (out.ptr[0] ? 33 : 1) + PAYMENT_ADDR_LEN + DIVERSIFIER_LEN + ASSET_ID_LEN;
+            rtoken = out.ptr + (out.ptr[0] ? OVK_PLUS_CHECK_BYTE : 1) + PAYMENT_ADDR_LEN;
+            amount = out.ptr + (out.ptr[0] ? OVK_PLUS_CHECK_BYTE : 1) + PAYMENT_ADDR_LEN + ASSET_ID_LEN;
             CHECK_ERROR(findAssetData(&ctx->tx_obj->transaction.sections.maspBuilder, rtoken, &asset_data, &asset_idx))
             if(asset_idx < ctx->tx_obj->transaction.sections.maspBuilder.n_asset_type) {
                 MEMCPY(tmp_amount + (asset_data.position * sizeof(uint64_t)), amount, sizeof(uint64_t));
@@ -1769,7 +1818,7 @@ static parser_error_t printUpdateStewardCommission( const parser_context_t *ctx,
         return parser_display_idx_out_of_range;
     }
     // displayIdx will be greater than the right part. No underflow
-    const bool hasMemo = ctx->tx_obj->transaction.header.memoSection != NULL;
+    const bool hasMemo = hasMemoToPrint(ctx);
     const uint8_t adjustedDisplayIdx  = displayIdx - 2 - (2 * updateStewardCommission->commissionLen) - (hasMemo ? 1 : 0);
     return printExpert(ctx, adjustedDisplayIdx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount);
 }
@@ -1782,29 +1831,29 @@ static parser_error_t printChangeValidatorMetadata(  const parser_context_t *ctx
 
     const tx_metadata_change_t *metadataChange = &ctx->tx_obj->metadataChange;
 
-    if(displayIdx >= 2 && metadataChange->name.ptr == NULL) {
+    if(displayIdx >= 2 && !metadataChange->has_name) {
         displayIdx++;
     }
-    if(displayIdx >= 3 && metadataChange->email.ptr == NULL) {
+    if(displayIdx >= 3 && !metadataChange->has_email) {
         displayIdx++;
     }
-    if(displayIdx >= 4 && metadataChange->description.ptr == NULL) {
+    if(displayIdx >= 4 && !metadataChange->has_description) {
         displayIdx++;
     }
-    if(displayIdx >= 5 && metadataChange->website.ptr == NULL) {
+    if(displayIdx >= 5 && !metadataChange->has_website) {
         displayIdx++;
     }
-    if(displayIdx >= 6 && metadataChange->discord_handle.ptr == NULL) {
+    if(displayIdx >= 6 && !metadataChange->has_discord_handle) {
         displayIdx++;
     }
-    if(displayIdx >= 7 && metadataChange->avatar.ptr == NULL) {
+    if(displayIdx >= 7 && !metadataChange->has_avatar) {
         displayIdx++;
     }
     if(displayIdx >= 8 && !metadataChange->has_commission_rate) {
         displayIdx++;
     }
 
-    const bool hasMemo = ctx->tx_obj->transaction.header.memoSection != NULL;
+    const bool hasMemo = hasMemoToPrint(ctx);
     if (displayIdx >= 9 && !hasMemo) {
         displayIdx++;
     }
@@ -1825,32 +1874,51 @@ static parser_error_t printChangeValidatorMetadata(  const parser_context_t *ctx
         }
         case 2: {
             snprintf(outKey, outKeyLen, "Name");
-            pageStringExt(outVal, outValLen, (const char*)metadataChange->name.ptr, metadataChange->name.len, pageIdx, pageCount);
+            snprintf(outVal, outValLen, "");
+            if (metadataChange->name.len > 0) {
+                pageStringExt(outVal, outValLen, (const char*)metadataChange->name.ptr, metadataChange->name.len, pageIdx, pageCount);
+            }
+
             break;
         }
         case 3: {
             snprintf(outKey, outKeyLen, "Email");
-            pageStringExt(outVal, outValLen, (const char*)metadataChange->email.ptr, metadataChange->email.len, pageIdx, pageCount);
+            snprintf(outVal, outValLen, "");
+            if (metadataChange->email.len > 0) {
+                pageStringExt(outVal, outValLen, (const char*)metadataChange->email.ptr, metadataChange->email.len, pageIdx, pageCount);
+            }
             break;
         }
         case 4: {
             snprintf(outKey, outKeyLen, "Description");
-            pageStringExt(outVal, outValLen, (const char*)metadataChange->description.ptr, metadataChange->description.len, pageIdx, pageCount);
+            snprintf(outVal, outValLen, "");
+            if (metadataChange->description.len > 0) {
+                pageStringExt(outVal, outValLen, (const char*)metadataChange->description.ptr, metadataChange->description.len, pageIdx, pageCount);
+            }
             break;
         }
         case 5: {
             snprintf(outKey, outKeyLen, "Website");
-            pageStringExt(outVal, outValLen, (const char*)metadataChange->website.ptr, metadataChange->website.len, pageIdx, pageCount);
+            snprintf(outVal, outValLen, "");
+            if (metadataChange->website.len > 0) {
+                pageStringExt(outVal, outValLen, (const char*)metadataChange->website.ptr, metadataChange->website.len, pageIdx, pageCount);
+            }
             break;
         }
         case 6: {
             snprintf(outKey, outKeyLen, "Discord handle");
-            pageStringExt(outVal, outValLen, (const char*)metadataChange->discord_handle.ptr, metadataChange->discord_handle.len, pageIdx, pageCount);
+            snprintf(outVal, outValLen, "");
+            if (metadataChange->discord_handle.len > 0) {
+                pageStringExt(outVal, outValLen, (const char*)metadataChange->discord_handle.ptr, metadataChange->discord_handle.len, pageIdx, pageCount);
+            }
             break;
         }
         case 7: {
             snprintf(outKey, outKeyLen, "Avatar");
-            pageStringExt(outVal, outValLen, (const char*)metadataChange->avatar.ptr, metadataChange->avatar.len, pageIdx, pageCount);
+            snprintf(outVal, outValLen, "");
+            if (metadataChange->avatar.len > 0) {
+                pageStringExt(outVal, outValLen, (const char*)metadataChange->avatar.ptr, metadataChange->avatar.len, pageIdx, pageCount);
+            }
             break;
         }
         case 8: {
@@ -1882,7 +1950,7 @@ static parser_error_t printBridgePoolTransfer(  const parser_context_t *ctx,
 
     tx_bridge_pool_transfer_t *bridgePoolTransfer = &ctx->tx_obj->bridgePoolTransfer;
     char tmpBuffer[45] = {0};
-    const bool hasMemo = ctx->tx_obj->transaction.header.memoSection != NULL;
+    const bool hasMemo = hasMemoToPrint(ctx);
     if (displayIdx >= 9 && !hasMemo) {
         displayIdx++;
     }

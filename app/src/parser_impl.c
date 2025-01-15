@@ -38,6 +38,18 @@ parser_error_t _read(parser_context_t *ctx, parser_tx_t *v) {
     return parser_ok;
 }
 
+bool hasMemoToPrint(const parser_context_t *ctx) {
+    // Check if memoSection exists and has a commitmentDiscriminant
+    if ((ctx->tx_obj->transaction.header.memoSection != NULL && 
+        ctx->tx_obj->transaction.header.memoSection->commitmentDiscriminant && 
+        ctx->tx_obj->transaction.header.memoSection->bytes.len != 0) ||
+        (ctx->tx_obj->transaction.header.memoSection != NULL && ctx->tx_obj->transaction.header.memoSection->commitmentDiscriminant == 0)) {
+        
+        return true; // Memo is available to print
+    }
+    return false; // No memo to print
+}
+
 parser_error_t getNumItems(const parser_context_t *ctx, uint8_t *numItems) {
     *numItems = 0;
     switch (ctx->tx_obj->typeTx) {
@@ -97,19 +109,19 @@ parser_error_t getNumItems(const parser_context_t *ctx, uint8_t *numItems) {
 
         case BecomeValidator: {
             *numItems = (app_mode_expert() ? BECOME_VALIDATOR_EXPERT_PARAMS : BECOME_VALIDATOR_NORMAL_PARAMS);
-            if(ctx->tx_obj->becomeValidator.name.ptr) {
+            if(ctx->tx_obj->becomeValidator.has_name) {
                 (*numItems)++;
             }
-            if(ctx->tx_obj->becomeValidator.description.ptr) {
+            if(ctx->tx_obj->becomeValidator.has_description) {
                 (*numItems)++;
             }
-            if(ctx->tx_obj->becomeValidator.discord_handle.ptr) {
+            if(ctx->tx_obj->becomeValidator.has_discord_handle) {
                 (*numItems)++;
             }
-            if(ctx->tx_obj->becomeValidator.website.ptr) {
+            if(ctx->tx_obj->becomeValidator.has_website) {
                 (*numItems)++;
             }
-            if(ctx->tx_obj->becomeValidator.avatar.ptr) {
+            if(ctx->tx_obj->becomeValidator.has_avatar) {
                 (*numItems)++;
             }
             break;
@@ -164,22 +176,22 @@ parser_error_t getNumItems(const parser_context_t *ctx, uint8_t *numItems) {
         case ChangeValidatorMetadata: {
             *numItems = app_mode_expert() ? CHANGE_VALIDATOR_METADATA_EXPERT_PARAMS : CHANGE_VALIDATOR_METADATA_NORMAL_PARAMS;
 
-            if (ctx->tx_obj->metadataChange.name.ptr != NULL) {
+            if (ctx->tx_obj->metadataChange.has_name) {
                 (*numItems)++;
             }
-            if (ctx->tx_obj->metadataChange.email.ptr != NULL) {
+            if (ctx->tx_obj->metadataChange.has_email) {
                 (*numItems)++;
             }
-            if (ctx->tx_obj->metadataChange.description.ptr != NULL) {
+            if (ctx->tx_obj->metadataChange.has_description) {
                 (*numItems)++;
             }
-            if (ctx->tx_obj->metadataChange.website.ptr != NULL) {
+            if (ctx->tx_obj->metadataChange.has_website) {
                 (*numItems)++;
             }
-            if (ctx->tx_obj->metadataChange.discord_handle.ptr != NULL) {
+            if (ctx->tx_obj->metadataChange.has_discord_handle) {
                 (*numItems)++;
             }
-            if (ctx->tx_obj->metadataChange.avatar.ptr != NULL) {
+            if (ctx->tx_obj->metadataChange.has_avatar) {
                 (*numItems)++;
             }
             if (ctx->tx_obj->metadataChange.has_commission_rate) {
@@ -197,8 +209,8 @@ parser_error_t getNumItems(const parser_context_t *ctx, uint8_t *numItems) {
             break;
     }
 
-    if (ctx->tx_obj->transaction.header.memoSection != NULL) {
-      (*numItems)++;
+    if (hasMemoToPrint(ctx)) {
+        (*numItems)++;
     }
 
     if(app_mode_expert() && ctx->tx_obj->transaction.header.fees.symbol == NULL) {

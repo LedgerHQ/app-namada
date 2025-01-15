@@ -15,7 +15,7 @@
  ******************************************************************************* */
 import Zemu from '@zondax/zemu'
 import { NamadaApp, ResponseSignMasp, ResponseSpendSign, Signature } from '@zondax/ledger-namada'
-import { models, hdpath, defaultOptions, MASP_TRANSFER_SIGNING_TX, MASP_TRANSFER_TX } from './common'
+import { models, hdpath, defaultOptions, MASP_TRANSFER_SIGNING_TX, MASP_TRANSFER_TX, zip32_path, tx_ibc_masp } from './common'
 import { hashSignatureSec } from './utils'
 
 // @ts-ignore
@@ -90,7 +90,7 @@ describe('Masp', function () {
       const msg = Buffer.from(MASP_TRANSFER_TX, 'hex')
 
       //Sign and verify returned hash
-      const respRequest = app.signMaspSpends(hdpath, msg)
+      const respRequest = app.signMaspSpends(zip32_path, msg)
       // Wait until we are not in the main menu
       await sim.waitUntilScreenIsNot(sim.getMainMenuSnapshot())
       await sim.compareSnapshotsAndApprove('.', `${m.prefix.toLowerCase()}-sign_masp_spends`)
@@ -246,6 +246,31 @@ describe('Masp', function () {
       // Expect the specific return code and error message
       expect(resp.returnCode).toEqual(27012)
       expect(resp.errorMessage).toEqual('Data is invalid')
+    } finally {
+      await sim.close()
+    }
+  })
+
+  test.concurrent.each(MASP_MODELS)('Sign IBC MASP Issue 105', async function (m) {
+  const sim = new Zemu(m.path)
+    try {
+      await sim.start({ ...defaultOptions, model: m.name })
+      const app = new NamadaApp(sim.getTransport())
+
+      const resp_addr = await app.getAddressAndPubKey(hdpath)
+      // console.log(resp_addr)
+
+      const respRequest = app.sign(hdpath, Buffer.from(tx_ibc_masp, 'hex'))
+      await sim.waitUntilScreenIsNot(sim.getMainMenuSnapshot(), 20000)
+      await sim.compareSnapshotsAndApprove('.', `${m.prefix.toLowerCase()}-sign-masp-ibc`)
+
+      const resp = await respRequest
+      // console.log(resp, m.name, data.name)
+
+      expect(resp.returnCode).toEqual(0x9000)
+      expect(resp.errorMessage).toEqual('No errors')
+      expect(resp).toHaveProperty('signature')
+
     } finally {
       await sim.close()
     }
