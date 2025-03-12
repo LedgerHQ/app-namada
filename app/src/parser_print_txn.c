@@ -32,7 +32,56 @@
 #include "crypto.h"
 #endif
 
-static parser_error_t printBondTxn( const parser_context_t *ctx,
+#define CHECK_NULL(ptr) if ((ptr) == NULL) { return parser_unexpected_error; }
+
+__Z_INLINE parser_error_t printFee(const parser_context_t *ctx, char *outKey, uint16_t outKeyLen, char *outVal, uint16_t outValLen, uint8_t pageIdx, uint8_t *pageCount) {
+    if(ctx == NULL || outKey == NULL || outVal == NULL || pageCount == NULL) {
+        return parser_unexpected_error;
+    }
+
+    snprintf(outKey, outKeyLen, "Fee");
+
+    // Prepare result buffer (32 bytes)
+    uint8_t resultBytes[32] = {0}; // Initialize to zero
+    
+    // Perform multiplication maintaining little endian format
+    uint32_t carry = 0;
+    uint64_t sum = 0;
+    
+    // For each byte position in the result
+    for (uint8_t i = 0; i < sizeof(resultBytes); i++) {
+        sum = carry; // Use carry from the previous iteration
+        carry = 0;   // Reset carry for the current iteration
+        
+        // Multiply each byte of fee amount by each byte of gas limit that could affect this position
+        for (uint8_t j = 0; j <= i && j < 8; j++) {  // 8 bytes for uint64
+            if (i - j < ctx->tx_obj->transaction.header.fees.amount.len) {
+                sum += (uint64_t)ctx->tx_obj->transaction.header.fees.amount.ptr[i - j] * (uint64_t)((ctx->tx_obj->transaction.header.gasLimit >> (j * 8)) & 0xFF);
+            }
+        }
+        
+        // Store the current byte and keep the carry
+        resultBytes[i] = sum & 0xFF;
+        carry += (sum >> 8); // Update carry for the next iteration
+    }
+
+    // Create bytes_t for result
+    bytes_t result = {resultBytes, sizeof(resultBytes)};
+    
+    // Print result with proper decimal places (18 decimals)
+    CHECK_ERROR(printAmount(&result, 
+                        true,
+                        ctx->tx_obj->transaction.header.fees.denom,
+                        ctx->tx_obj->transaction.header.fees.symbol,
+                        outVal,
+                        outValLen,
+                        pageIdx,
+                        pageCount))
+
+    return parser_ok;
+}
+
+static __attribute__((noinline)) parser_error_t printBondTxn( const parser_context_t *ctx,
                                     uint8_t displayIdx,
                                     char *outKey, uint16_t outKeyLen,
                                     char *outVal, uint16_t outValLen,
@@ -45,6 +94,10 @@ static parser_error_t printBondTxn( const parser_context_t *ctx,
     const bool hasMemo = hasMemoToPrint(ctx);
     if (displayIdx >= 4 && !hasMemo) {
         displayIdx++;
+    }
+
+    if (displayIdx >= 5 && app_mode_expert()) {
+        displayIdx += 2;
     }
 
     switch (displayIdx) {
@@ -78,19 +131,29 @@ static parser_error_t printBondTxn( const parser_context_t *ctx,
         case 4:
             CHECK_ERROR(printMemo(ctx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount))
             break;
-
+        case 5:
+            if(ctx->tx_obj->transaction.header.fees.symbol == NULL) {
+                snprintf(outKey, outKeyLen, "Fee token");
+                CHECK_ERROR(printAddressAlt(&ctx->tx_obj->transaction.header.fees.address, outVal, outValLen, pageIdx, pageCount))
+            } else {
+                CHECK_ERROR(printFee(ctx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount))
+            }
+            break;
+        case 6:
+            CHECK_ERROR(printFee(ctx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount))
+            break;
         default:
             if (!app_mode_expert()) {
                return parser_display_idx_out_of_range;
             }
-            displayIdx -= 5;
+            displayIdx -= 7;
             return printExpert(ctx, displayIdx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount);
     }
 
     return parser_ok;
 }
 
-static parser_error_t printResignSteward( const parser_context_t *ctx,
+static __attribute__((noinline)) parser_error_t printResignSteward( const parser_context_t *ctx,
                                         uint8_t displayIdx,
                                         char *outKey, uint16_t outKeyLen,
                                         char *outVal, uint16_t outValLen,
@@ -98,6 +161,10 @@ static parser_error_t printResignSteward( const parser_context_t *ctx,
     const bool hasMemo = hasMemoToPrint(ctx);
     if (displayIdx >= 2 && !hasMemo) {
         displayIdx++;
+    }
+
+    if (displayIdx >= 3 && app_mode_expert()) {
+        displayIdx += 2;
     }
 
     switch (displayIdx) {
@@ -116,60 +183,29 @@ static parser_error_t printResignSteward( const parser_context_t *ctx,
         case 2:
             CHECK_ERROR(printMemo(ctx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount))
             break;
-
+        case 3:
+            if(ctx->tx_obj->transaction.header.fees.symbol == NULL) {
+                snprintf(outKey, outKeyLen, "Fee token");
+                CHECK_ERROR(printAddressAlt(&ctx->tx_obj->transaction.header.fees.address, outVal, outValLen, pageIdx, pageCount))
+            } else {
+                CHECK_ERROR(printFee(ctx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount))
+            }
+            break;
+        case 4:
+            CHECK_ERROR(printFee(ctx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount))
+            break;
         default:
             if (!app_mode_expert()) {
                return parser_display_idx_out_of_range;
             }
-            displayIdx -= 3;
+            displayIdx -= 5;
             return printExpert(ctx, displayIdx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount);
     }
 
     return parser_ok;
 }
 
-static parser_error_t getSpendfromIndex(uint32_t index, bytes_t *spend) {
-
-    for (uint32_t i = 0; i < index; i++) {
-        spend->ptr += EXTENDED_FVK_LEN + DIVERSIFIER_LEN + NOTE_LEN;
-        uint8_t tmp_len = spend->ptr[0];
-        spend->ptr++;
-        spend->ptr += (tmp_len * (32 + 1)) + sizeof(uint64_t);
-    }
-
-    return parser_ok;
-}
-
-static parser_error_t getOutputfromIndex(uint32_t index, bytes_t *out) {
-
-    for (uint32_t i = 0; i < index; i++) {
-        uint8_t has_ovk = out->ptr[0];
-        if(has_ovk) {
-            out->ptr += 33;
-        } else {
-            out->ptr++;
-        }
-        out->ptr += PAYMENT_ADDR_LEN + OUT_NOTE_LEN + MEMO_LEN;
-    }
-
-    return parser_ok;
-}
-
-static parser_error_t findAssetData(const masp_builder_section_t *maspBuilder, const uint8_t *stoken, masp_asset_data_t *asset_data, uint32_t *index) {
-    parser_context_t asset_data_ctx = {.buffer = maspBuilder->asset_data.ptr, .bufferLen = maspBuilder->asset_data.len, .offset = 0, .tx_obj = NULL};
-    for (*index = 0; *index < maspBuilder->n_asset_type; (*index)++) {
-        CHECK_ERROR(readAssetData(&asset_data_ctx, asset_data))
-        uint8_t identifier[32];
-        uint8_t nonce;
-        CHECK_ERROR(derive_asset_type(asset_data, identifier, &nonce))
-        if(MEMCMP(identifier, stoken, ASSET_ID_LEN) == 0) {
-            return parser_ok;
-        }
-    }
-    return parser_ok;
-}
-
-static parser_error_t printTransferTxn( const parser_context_t *ctx,
+static __attribute__((noinline)) parser_error_t printTransferTxn( const parser_context_t *ctx,
                                         uint8_t displayIdx,
                                         char *outKey, uint16_t outKeyLen,
                                         char *outVal, uint16_t outValLen,
@@ -181,22 +217,29 @@ static parser_error_t printTransferTxn( const parser_context_t *ctx,
     // Compute number of spends/outs in the builder tx , and number of itemns to be printer for each
     uint32_t n_spends = ctx->tx_obj->transaction.sections.maspBuilder.builder.sapling_builder.n_spends * (uint32_t) ctx->tx_obj->transaction.isMasp;
     uint32_t n_outs = ctx->tx_obj->transaction.sections.maspBuilder.builder.sapling_builder.n_outputs * (uint32_t) ctx->tx_obj->transaction.isMasp;
-    uint16_t spend_index = 0;
-    uint16_t out_index = 0;
 
     const uint8_t typeStart = 0;
     const uint8_t sourcesStart = 1;
     const uint8_t spendsStart = sourcesStart + 2*ctx->tx_obj->transfer.non_masp_sources_len + ctx->tx_obj->transfer.no_symbol_sources;
-    const uint8_t targetsStart = spendsStart + 3*n_spends;
+    const uint8_t targetsStart = spendsStart + 2*n_spends + ctx->tx_obj->transaction.sections.maspBuilder.builder.sapling_builder.no_symbol_spends;
     const uint8_t outputsStart = targetsStart + 2*ctx->tx_obj->transfer.non_masp_targets_len + ctx->tx_obj->transfer.no_symbol_targets;
-    const uint8_t memoStart = outputsStart + 3*n_outs;
+    const uint8_t memoStart = outputsStart + 2*n_outs + ctx->tx_obj->transaction.sections.maspBuilder.builder.sapling_builder.no_symbol_outputs;
     const uint8_t expertStart = memoStart + (ctx->tx_obj->transaction.header.memoSection != NULL);
-    AddressAlt source_address;
-    AddressAlt target_address;
-    AddressAlt token;
-    bytes_t namount;
+    AddressAlt source_address = {0};
+    AddressAlt target_address = {0};
+    AddressAlt token = {0};
+    bytes_t namount = {0};
     uint8_t amount_denom = 0;
     const char* symbol = NULL;
+    const uint8_t *stoken = NULL;
+    const uint8_t *rtoken = NULL;
+    masp_asset_data_t asset_data = {0};
+    uint32_t asset_idx = 0;
+    const uint8_t *amount = {0};
+    char tmp_buf[300] = {0};
+    uint8_t tmp_amount[32] = {0};
+    bytes_t amount_bytes = {tmp_amount, 32};
+    
 
     if (typeStart <= displayIdx && displayIdx < sourcesStart) {
         displayIdx = 0;
@@ -211,15 +254,24 @@ static parser_error_t printTransferTxn( const parser_context_t *ctx,
                 displayIdx -= 2 + (symbol == NULL);
             } else {
                 displayIdx += 1;
-            break;
+                break;
             }
         }
     } else if (spendsStart <= displayIdx && displayIdx < targetsStart) {
-        spend_index = (displayIdx - spendsStart) / 3;
-        displayIdx = 7 + ((displayIdx - spendsStart) % 3);
+        displayIdx -= spendsStart;
+        for(uint32_t i = 0; i < n_spends; i++) {
+            getSpendfromIndex(i, &spend);
+            stoken = spend.ptr + EXTENDED_FVK_LEN + DIVERSIFIER_LEN;
+            amount = spend.ptr + EXTENDED_FVK_LEN + DIVERSIFIER_LEN + ASSET_ID_LEN;
+            CHECK_ERROR(findAssetData(&ctx->tx_obj->transaction.sections.maspBuilder, stoken, &asset_data, &asset_idx))
 
-        // Get new spend pointer
-        getSpendfromIndex(spend_index, &spend);
+            if (displayIdx >= (asset_data.symbol == NULL ? 3 : 2)) {
+                displayIdx -= (asset_data.symbol == NULL ? 3 : 2);
+            } else {
+                displayIdx += 7;  // Base case number for spends
+                break;
+            }
+        }
     } else if (targetsStart <= displayIdx && displayIdx < outputsStart) {
         displayIdx -= targetsStart;
         parser_context_t targets_ctx = {.buffer = ctx->tx_obj->transfer.targets.ptr, .bufferLen = ctx->tx_obj->transfer.targets.len, .offset = 0, .tx_obj = NULL};
@@ -235,23 +287,25 @@ static parser_error_t printTransferTxn( const parser_context_t *ctx,
             }
         }
     } else if(outputsStart <= displayIdx && displayIdx < memoStart) {
-        out_index = (displayIdx - outputsStart) / 3;
-        displayIdx = 10 + ((displayIdx - outputsStart) % 3);
-        // Get new output pointer
-        getOutputfromIndex(out_index, &out);
+        displayIdx -= outputsStart;
+        for(uint32_t i = 0; i < n_outs; i++) {
+            getOutputfromIndex(i, &out);
+            rtoken = out.ptr + (out.ptr[0] ? OVK_PLUS_CHECK_BYTE : 1) + PAYMENT_ADDR_LEN;
+            amount = out.ptr + (out.ptr[0] ? OVK_PLUS_CHECK_BYTE : 1) + PAYMENT_ADDR_LEN + ASSET_ID_LEN;
+            CHECK_ERROR(findAssetData(&ctx->tx_obj->transaction.sections.maspBuilder, rtoken, &asset_data, &asset_idx))
+
+            if (displayIdx >= (asset_data.symbol == NULL ? 3 : 2)) {
+                displayIdx -= (asset_data.symbol == NULL ? 3 : 2);
+            } else {
+                displayIdx += 10;  // Base case number for outputs
+                break;
+            }
+        }
     } else if(memoStart <= displayIdx && displayIdx < expertStart) {
         displayIdx = 13;
     } else if(expertStart <= displayIdx) {
-        displayIdx = 14 + (displayIdx - expertStart);
+        displayIdx = (app_mode_expert() ? 16 : 14) + (displayIdx - expertStart);
     }
-
-    char tmp_buf[300] = {0};
-    uint8_t tmp_amount[32] = {0};
-    bytes_t amount_bytes = {tmp_amount, 32};
-    const uint8_t *amount = {0};
-    const uint8_t *rtoken = {0};
-    uint32_t asset_idx;
-    masp_asset_data_t asset_data;
 
     switch (displayIdx) {
         case 0:
@@ -307,25 +361,28 @@ static parser_error_t printTransferTxn( const parser_context_t *ctx,
 
             break;
         case 8: {
-            snprintf(outKey, outKeyLen, "Sending Token");
-            const uint8_t *stoken = spend.ptr + EXTENDED_FVK_LEN + DIVERSIFIER_LEN;
-            CHECK_ERROR(findAssetData(&ctx->tx_obj->transaction.sections.maspBuilder, stoken, &asset_data, &asset_idx))
-            if(asset_idx < ctx->tx_obj->transaction.sections.maspBuilder.n_asset_type) {
-                CHECK_ERROR(printAddressAlt(&asset_data.token, outVal, outValLen, pageIdx, pageCount))
+            if(asset_data.symbol != NULL) {
+                snprintf(outKey, outKeyLen, "Sending Amount");
+                CHECK_NULL(amount)
+                MEMCPY(tmp_amount + (asset_data.position * sizeof(uint64_t)), amount, sizeof(uint64_t));
+                printAmount(&amount_bytes, false, asset_data.denom, asset_data.symbol, outVal, outValLen, pageIdx, pageCount);
             } else {
-                array_to_hexstr(tmp_buf, sizeof(tmp_buf), stoken, ASSET_ID_LEN);
-                pageString(outVal, outValLen, (const char*) tmp_buf, pageIdx, pageCount);
+                snprintf(outKey, outKeyLen, "Sending Token");
+                if(asset_idx < ctx->tx_obj->transaction.sections.maspBuilder.n_asset_type) {
+                    CHECK_ERROR(printAddressAlt(&asset_data.token, outVal, outValLen, pageIdx, pageCount))
+                } else {
+                    array_to_hexstr(tmp_buf, sizeof(tmp_buf), stoken, ASSET_ID_LEN);
+                    pageString(outVal, outValLen, (const char*) tmp_buf, pageIdx, pageCount);
+                }
             }
             break;
         } case 9: {
             snprintf(outKey, outKeyLen, "Sending Amount");
-            const uint8_t *stoken = spend.ptr + EXTENDED_FVK_LEN + DIVERSIFIER_LEN;
-            amount = spend.ptr + EXTENDED_FVK_LEN + DIVERSIFIER_LEN + ASSET_ID_LEN;
-            CHECK_ERROR(findAssetData(&ctx->tx_obj->transaction.sections.maspBuilder, stoken, &asset_data, &asset_idx))
-              if(asset_idx < ctx->tx_obj->transaction.sections.maspBuilder.n_asset_type) {
+            CHECK_NULL(amount)
+            if(asset_idx < ctx->tx_obj->transaction.sections.maspBuilder.n_asset_type) {
                 // tmp_amount is a 32 bytes array that represents an uint64[4] array, position will determine amount postion inside the array
                 MEMCPY(tmp_amount + (asset_data.position * sizeof(uint64_t)), amount, sizeof(uint64_t));
-                printAmount(&amount_bytes, false, asset_data.denom, "", outVal, outValLen, pageIdx, pageCount);
+                printAmount(&amount_bytes, false, asset_data.denom, asset_data.symbol, outVal, outValLen, pageIdx, pageCount);
             } else {
                 MEMCPY(tmp_amount, amount, sizeof(uint64_t));
                 printAmount(&amount_bytes, false, 0, "", outVal, outValLen, pageIdx, pageCount);
@@ -348,24 +405,27 @@ static parser_error_t printTransferTxn( const parser_context_t *ctx,
             pageString(outVal, outValLen, (const char*) tmp_buf, pageIdx, pageCount);
             break;
         case 11:
-            snprintf(outKey, outKeyLen, "Receiving Token");
-            rtoken = out.ptr + (out.ptr[0] ? OVK_PLUS_CHECK_BYTE : 1) + PAYMENT_ADDR_LEN;
-            CHECK_ERROR(findAssetData(&ctx->tx_obj->transaction.sections.maspBuilder, rtoken, &asset_data, &asset_idx))
-            if(asset_idx < ctx->tx_obj->transaction.sections.maspBuilder.n_asset_type) {
-                CHECK_ERROR(printAddressAlt(&asset_data.token, outVal, outValLen, pageIdx, pageCount))
+            if(asset_data.symbol != NULL) {
+                snprintf(outKey, outKeyLen, "Receiving Amount");
+                CHECK_NULL(amount)
+                MEMCPY(tmp_amount + (asset_data.position * sizeof(uint64_t)), amount, sizeof(uint64_t));
+                printAmount(&amount_bytes, false, asset_data.denom, asset_data.symbol, outVal, outValLen, pageIdx, pageCount);
             } else {
-                array_to_hexstr(tmp_buf, sizeof(tmp_buf), rtoken, ASSET_ID_LEN);
-                pageString(outVal, outValLen, (const char*) tmp_buf, pageIdx, pageCount);
+                snprintf(outKey, outKeyLen, "Receiving Token");
+                if(asset_idx < ctx->tx_obj->transaction.sections.maspBuilder.n_asset_type) {
+                    CHECK_ERROR(printAddressAlt(&asset_data.token, outVal, outValLen, pageIdx, pageCount))
+                } else {
+                    array_to_hexstr(tmp_buf, sizeof(tmp_buf), rtoken, ASSET_ID_LEN);
+                    pageString(outVal, outValLen, (const char*) tmp_buf, pageIdx, pageCount);
+                }
             }
             break;
         case 12: {
             snprintf(outKey, outKeyLen, "Receiving Amount");
-            rtoken = out.ptr + (out.ptr[0] ? OVK_PLUS_CHECK_BYTE : 1) + PAYMENT_ADDR_LEN;
-            amount = out.ptr + (out.ptr[0] ? OVK_PLUS_CHECK_BYTE : 1) + PAYMENT_ADDR_LEN + ASSET_ID_LEN;
-            CHECK_ERROR(findAssetData(&ctx->tx_obj->transaction.sections.maspBuilder, rtoken, &asset_data, &asset_idx))
+            CHECK_NULL(amount)
             if(asset_idx < ctx->tx_obj->transaction.sections.maspBuilder.n_asset_type) {
                 MEMCPY(tmp_amount + (asset_data.position * sizeof(uint64_t)), amount, sizeof(uint64_t));
-                printAmount(&amount_bytes, false, asset_data.denom, "", outVal, outValLen, pageIdx, pageCount);
+                printAmount(&amount_bytes, false, asset_data.denom, asset_data.symbol, outVal, outValLen, pageIdx, pageCount);
             } else {
                 MEMCPY(tmp_amount, amount, sizeof(uint64_t));
                 printAmount(&amount_bytes, false, 0, "", outVal, outValLen, pageIdx, pageCount);
@@ -374,23 +434,38 @@ static parser_error_t printTransferTxn( const parser_context_t *ctx,
         } case 13:
             CHECK_ERROR(printMemo(ctx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount))
             break;
+        case 14:
+            if(ctx->tx_obj->transaction.header.fees.symbol == NULL) {
+                snprintf(outKey, outKeyLen, "Fee token");
+                CHECK_ERROR(printAddressAlt(&ctx->tx_obj->transaction.header.fees.address, outVal, outValLen, pageIdx, pageCount))
+            } else {
+                CHECK_ERROR(printFee(ctx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount))
+            }
+            break;
+        case 15:
+            CHECK_ERROR(printFee(ctx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount))
+            break;
 
         default:
             if (!app_mode_expert()) {
                return parser_display_idx_out_of_range;
             }
-            displayIdx -= 14;
+            displayIdx -= 16;
             return printExpert(ctx, displayIdx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount);
     }
 
     return parser_ok;
 }
 
-static parser_error_t printCustomTxn( const parser_context_t *ctx,
+static __attribute__((noinline)) parser_error_t printCustomTxn( const parser_context_t *ctx,
                                            uint8_t displayIdx,
                                            char *outKey, uint16_t outKeyLen,
                                            char *outVal, uint16_t outValLen,
                                            uint8_t pageIdx, uint8_t *pageCount) {
+
+    if(displayIdx >= 1 && app_mode_expert()) {
+        displayIdx += 2;
+    }
 
     switch (displayIdx) {
         case 0:
@@ -401,18 +476,29 @@ static parser_error_t printCustomTxn( const parser_context_t *ctx,
                                           outVal, outValLen, pageIdx, pageCount))
             }
             break;
+        case 1:
+            if(ctx->tx_obj->transaction.header.fees.symbol == NULL) {
+                snprintf(outKey, outKeyLen, "Fee token");
+                CHECK_ERROR(printAddressAlt(&ctx->tx_obj->transaction.header.fees.address, outVal, outValLen, pageIdx, pageCount))
+            } else {
+                CHECK_ERROR(printFee(ctx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount))
+            }
+            break;
+        case 2:
+            CHECK_ERROR(printFee(ctx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount))
+            break;
         default:
             if (!app_mode_expert()) {
                 return parser_display_idx_out_of_range;
             }
-            displayIdx -= 1;
+            displayIdx -= 3;
             return printExpert(ctx, displayIdx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount);
     }
 
     return parser_ok;
 }
 
-static parser_error_t printInitAccountTxn(  const parser_context_t *ctx,
+static __attribute__((noinline)) parser_error_t printInitAccountTxn(  const parser_context_t *ctx,
                                             uint8_t displayIdx,
                                             char *outKey, uint16_t outKeyLen,
                                             char *outVal, uint16_t outValLen,
@@ -432,6 +518,10 @@ static parser_error_t printInitAccountTxn(  const parser_context_t *ctx,
     const bool hasMemo = hasMemoToPrint(ctx);
     if (adjustedDisplayIdx >= 4 && !hasMemo) {
         adjustedDisplayIdx++;
+    }
+
+    if(adjustedDisplayIdx >= 5 && app_mode_expert()) {
+        adjustedDisplayIdx += 2;
     }
 
     switch (adjustedDisplayIdx) {
@@ -479,7 +569,17 @@ static parser_error_t printInitAccountTxn(  const parser_context_t *ctx,
         case 4:
             CHECK_ERROR(printMemo(ctx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount))
             break;
-
+        case 5:
+            if(ctx->tx_obj->transaction.header.fees.symbol == NULL) {
+                snprintf(outKey, outKeyLen, "Fee token");
+                CHECK_ERROR(printAddressAlt(&ctx->tx_obj->transaction.header.fees.address, outVal, outValLen, pageIdx, pageCount))
+            } else {
+                CHECK_ERROR(printFee(ctx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount))
+            }
+            break;
+        case 6:
+            CHECK_ERROR(printFee(ctx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount))
+            break;
         default:
             if (!app_mode_expert()) {
                 return parser_display_idx_out_of_range;
@@ -491,7 +591,7 @@ static parser_error_t printInitAccountTxn(  const parser_context_t *ctx,
     return parser_ok;
 }
 
-static parser_error_t printInitProposalTxn(  const parser_context_t *ctx,
+static __attribute__((noinline)) parser_error_t printInitProposalTxn(  const parser_context_t *ctx,
                                               uint8_t displayIdx,
                                               char *outKey, uint16_t outKeyLen,
                                               char *outVal, uint16_t outValLen,
@@ -525,6 +625,11 @@ static parser_error_t printInitProposalTxn(  const parser_context_t *ctx,
     if (adjustedIdx >= 7 && !hasMemo) {
         adjustedIdx++;
     }
+
+    if(adjustedIdx >= 8 && app_mode_expert()) {
+        adjustedIdx += 2;
+    }
+
     // Less than 20 characters are epochs are uint64
     char strEpoch[25] = {0};
     switch (adjustedIdx) {
@@ -573,16 +678,26 @@ static parser_error_t printInitProposalTxn(  const parser_context_t *ctx,
             array_to_hexstr((char*) strContent, sizeof(strContent), content->ptr, content->len);
             pageString(outVal, outValLen, (const char*) &strContent, pageIdx, pageCount);
             break;
-
         case 7:
             CHECK_ERROR(printMemo(ctx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount))
+            break;
+        case 8:
+            if(ctx->tx_obj->transaction.header.fees.symbol == NULL) {
+                snprintf(outKey, outKeyLen, "Fee token");
+                CHECK_ERROR(printAddressAlt(&ctx->tx_obj->transaction.header.fees.address, outVal, outValLen, pageIdx, pageCount))
+            } else {
+                CHECK_ERROR(printFee(ctx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount))
+            }
+            break;
+        case 9:
+            CHECK_ERROR(printFee(ctx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount))
             break;
 
         default:
             if (!app_mode_expert()) {
                 return parser_display_idx_out_of_range;
             }
-            adjustedIdx -= 8;
+            adjustedIdx -= 10;
             return printExpert(ctx, adjustedIdx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount);
     }
 
@@ -590,7 +705,7 @@ static parser_error_t printInitProposalTxn(  const parser_context_t *ctx,
 }
 
 
-static parser_error_t printVoteProposalTxn(  const parser_context_t *ctx,
+static __attribute__((noinline)) parser_error_t printVoteProposalTxn(  const parser_context_t *ctx,
                                              uint8_t displayIdx,
                                              char *outKey, uint16_t outKeyLen,
                                              char *outVal, uint16_t outValLen,
@@ -601,6 +716,11 @@ static parser_error_t printVoteProposalTxn(  const parser_context_t *ctx,
     if (displayIdx >= 4 && !hasMemo) {
         displayIdx++;
     }
+
+    if(displayIdx >= 5 && app_mode_expert()) {
+        displayIdx += 2;
+    }
+
     switch (displayIdx) {
         case 0:
             snprintf(outKey, outKeyLen, "Type");
@@ -645,12 +765,22 @@ static parser_error_t printVoteProposalTxn(  const parser_context_t *ctx,
         case 4:
             CHECK_ERROR(printMemo(ctx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount))
             break;
-
+        case 5:
+            if(ctx->tx_obj->transaction.header.fees.symbol == NULL) {
+                snprintf(outKey, outKeyLen, "Fee token");
+                CHECK_ERROR(printAddressAlt(&ctx->tx_obj->transaction.header.fees.address, outVal, outValLen, pageIdx, pageCount))
+            } else {
+                CHECK_ERROR(printFee(ctx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount))
+            }
+            break;
+        case 6:
+            CHECK_ERROR(printFee(ctx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount))
+            break;
         default:
             if (!app_mode_expert()) {
                 return parser_display_idx_out_of_range;
             }
-            displayIdx -= 5;
+            displayIdx -= 7;
             return printExpert(ctx, displayIdx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount);
     }
 
@@ -658,7 +788,7 @@ static parser_error_t printVoteProposalTxn(  const parser_context_t *ctx,
 }
 
 
-static parser_error_t printRevealPubkeyTxn(  const parser_context_t *ctx,
+static __attribute__((noinline)) parser_error_t printRevealPubkeyTxn(  const parser_context_t *ctx,
                                             uint8_t displayIdx,
                                             char *outKey, uint16_t outKeyLen,
                                             char *outVal, uint16_t outValLen,
@@ -667,6 +797,10 @@ static parser_error_t printRevealPubkeyTxn(  const parser_context_t *ctx,
     const bool hasMemo = hasMemoToPrint(ctx);
     if (displayIdx >= 2 && !hasMemo) {
         displayIdx++;
+    }
+
+    if(displayIdx >= 3 && app_mode_expert()) {
+        displayIdx += 2;
     }
 
     switch (displayIdx) {
@@ -686,19 +820,30 @@ static parser_error_t printRevealPubkeyTxn(  const parser_context_t *ctx,
         case 2:
             CHECK_ERROR(printMemo(ctx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount))
             break;
+        case 3:
+            if(ctx->tx_obj->transaction.header.fees.symbol == NULL) {
+                snprintf(outKey, outKeyLen, "Fee token");
+                CHECK_ERROR(printAddressAlt(&ctx->tx_obj->transaction.header.fees.address, outVal, outValLen, pageIdx, pageCount))
+            } else {
+                CHECK_ERROR(printFee(ctx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount))
+            }
+            break;
+        case 4:
+            CHECK_ERROR(printFee(ctx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount))
+            break;
 
         default:
             if (!app_mode_expert()) {
                 return parser_display_idx_out_of_range;
             }
-            displayIdx -= 3;
+            displayIdx -= 5;
             return printExpert(ctx, displayIdx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount);
     }
 
     return parser_ok;
 }
 
-static parser_error_t printChangeConsensusKeyTxn( const parser_context_t *ctx,
+static __attribute__((noinline)) parser_error_t printChangeConsensusKeyTxn( const parser_context_t *ctx,
                                         uint8_t displayIdx,
                                         char *outKey, uint16_t outKeyLen,
                                         char *outVal, uint16_t outValLen,
@@ -706,6 +851,10 @@ static parser_error_t printChangeConsensusKeyTxn( const parser_context_t *ctx,
     const bool hasMemo = hasMemoToPrint(ctx);
     if (displayIdx >= 3 && !hasMemo) {
         displayIdx++;
+    }
+
+    if(displayIdx >= 4 && app_mode_expert()) {
+        displayIdx += 2;
     }
 
     switch (displayIdx) {
@@ -728,19 +877,30 @@ static parser_error_t printChangeConsensusKeyTxn( const parser_context_t *ctx,
         case 3:
             CHECK_ERROR(printMemo(ctx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount))
             break;
+        case 4:
+            if(ctx->tx_obj->transaction.header.fees.symbol == NULL) {
+                snprintf(outKey, outKeyLen, "Fee token");
+                CHECK_ERROR(printAddressAlt(&ctx->tx_obj->transaction.header.fees.address, outVal, outValLen, pageIdx, pageCount))
+            } else {
+                CHECK_ERROR(printFee(ctx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount))
+            }
+            break;
+        case 5:
+            CHECK_ERROR(printFee(ctx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount))
+            break;
 
         default:
             if (!app_mode_expert()) {
                return parser_display_idx_out_of_range;
             }
-            displayIdx -= 4;
+            displayIdx -= 6;
             return printExpert(ctx, displayIdx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount);
     }
 
     return parser_ok;
 }
 
-static parser_error_t printUnjailValidatorTxn(const parser_context_t *ctx,
+static __attribute__((noinline)) parser_error_t printUnjailValidatorTxn(const parser_context_t *ctx,
                                             uint8_t displayIdx,
                                             char *outKey, uint16_t outKeyLen,
                                             char *outVal, uint16_t outValLen,
@@ -748,6 +908,10 @@ static parser_error_t printUnjailValidatorTxn(const parser_context_t *ctx,
     const bool hasMemo = hasMemoToPrint(ctx);
     if (displayIdx >= 2 && !hasMemo) {
         displayIdx++;
+    }
+
+    if(displayIdx >= 3 && app_mode_expert()) {
+        displayIdx += 2;
     }
 
     switch (displayIdx) {
@@ -766,18 +930,29 @@ static parser_error_t printUnjailValidatorTxn(const parser_context_t *ctx,
         case 2:
             CHECK_ERROR(printMemo(ctx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount))
             break;
+        case 3:
+            if (ctx->tx_obj->transaction.header.fees.symbol == NULL) {
+                snprintf(outKey, outKeyLen, "Fee token");
+                CHECK_ERROR(printAddressAlt(&ctx->tx_obj->transaction.header.fees.address, outVal, outValLen, pageIdx, pageCount))
+            } else {
+                CHECK_ERROR(printFee(ctx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount))
+            }
+            break;
+        case 4:
+            CHECK_ERROR(printFee(ctx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount))
+            break;
 
         default:
             if (!app_mode_expert()) {
                 return parser_display_idx_out_of_range;
             }
-            displayIdx -= 3;
+            displayIdx -= 5;
             return printExpert(ctx, displayIdx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount);
     }
     return parser_ok;
 }
 
-static parser_error_t printActivateValidator(const parser_context_t *ctx,
+static __attribute__((noinline)) parser_error_t printActivateValidator(const parser_context_t *ctx,
                                             uint8_t displayIdx,
                                             char *outKey, uint16_t outKeyLen,
                                             char *outVal, uint16_t outValLen,
@@ -785,6 +960,10 @@ static parser_error_t printActivateValidator(const parser_context_t *ctx,
     const bool hasMemo = hasMemoToPrint(ctx);
     if (displayIdx >= 2 && !hasMemo) {
         displayIdx++;
+    }
+
+    if(displayIdx >= 3 && app_mode_expert()) {
+        displayIdx += 2;
     }
 
     switch (displayIdx) {
@@ -806,18 +985,28 @@ static parser_error_t printActivateValidator(const parser_context_t *ctx,
         case 2:
             CHECK_ERROR(printMemo(ctx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount))
             break;
-
+        case 3:
+            if(ctx->tx_obj->transaction.header.fees.symbol == NULL) {
+                snprintf(outKey, outKeyLen, "Fee token");
+                CHECK_ERROR(printAddressAlt(&ctx->tx_obj->transaction.header.fees.address, outVal, outValLen, pageIdx, pageCount))
+            } else {
+                CHECK_ERROR(printFee(ctx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount))
+            }
+            break;
+        case 4:
+            CHECK_ERROR(printFee(ctx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount))
+            break;
         default:
             if (!app_mode_expert()) {
                 return parser_display_idx_out_of_range;
             }
-            displayIdx -= 3;
+            displayIdx -= 5;
             return printExpert(ctx, displayIdx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount);
     }
     return parser_ok;
 }
 
-static parser_error_t printUpdateVPTxn(const parser_context_t *ctx,
+static __attribute__((noinline)) parser_error_t printUpdateVPTxn(const parser_context_t *ctx,
                                        uint8_t displayIdx,
                                        char *outKey, uint16_t outKeyLen,
                                        char *outVal, uint16_t outValLen,
@@ -845,6 +1034,10 @@ static parser_error_t printUpdateVPTxn(const parser_context_t *ctx,
     }
     if (adjustedDisplayIdx >= 5 && ctx->tx_obj->transaction.header.memoSection == NULL) {
         adjustedDisplayIdx++;
+    }
+
+    if(adjustedDisplayIdx >= 6 && app_mode_expert()) {
+        adjustedDisplayIdx += 2;
     }
 
     switch (adjustedDisplayIdx) {
@@ -897,6 +1090,17 @@ static parser_error_t printUpdateVPTxn(const parser_context_t *ctx,
         case 5:
             CHECK_ERROR(printMemo(ctx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount))
             break;
+        case 6:
+            if(ctx->tx_obj->transaction.header.fees.symbol == NULL) {
+                snprintf(outKey, outKeyLen, "Fee token");
+                CHECK_ERROR(printAddressAlt(&ctx->tx_obj->transaction.header.fees.address, outVal, outValLen, pageIdx, pageCount))
+            } else {
+                CHECK_ERROR(printFee(ctx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount))
+            }
+            break;
+        case 7:
+            CHECK_ERROR(printFee(ctx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount))
+            break;
 
         default:
             if (!app_mode_expert()) {
@@ -910,7 +1114,7 @@ static parser_error_t printUpdateVPTxn(const parser_context_t *ctx,
     return parser_ok;
 }
 
-static parser_error_t printBecomeValidatorTxn(  const parser_context_t *ctx,
+static __attribute__((noinline)) parser_error_t printBecomeValidatorTxn(  const parser_context_t *ctx,
                                               uint8_t displayIdx,
                                               char *outKey, uint16_t outKeyLen,
                                               char *outVal, uint16_t outValLen,
@@ -935,6 +1139,10 @@ static parser_error_t printBecomeValidatorTxn(  const parser_context_t *ctx,
     const bool hasMemo = hasMemoToPrint(ctx);
     if (displayIdx >= 14 && !hasMemo) {
         displayIdx++;
+    }
+
+    if(displayIdx >= 15 && app_mode_expert()) {
+        displayIdx += 2;
     }
 
     switch (displayIdx) {
@@ -1036,12 +1244,23 @@ static parser_error_t printBecomeValidatorTxn(  const parser_context_t *ctx,
         case 14:
             CHECK_ERROR(printMemo(ctx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount))
             break;
+        case 15:
+            if(ctx->tx_obj->transaction.header.fees.symbol == NULL) {
+                snprintf(outKey, outKeyLen, "Fee token");
+                CHECK_ERROR(printAddressAlt(&ctx->tx_obj->transaction.header.fees.address, outVal, outValLen, pageIdx, pageCount))
+            } else {
+                CHECK_ERROR(printFee(ctx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount))
+            }
+            break;
+        case 16:
+            CHECK_ERROR(printFee(ctx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount))
+            break;
 
         default: {
             if (!app_mode_expert()) {
                 return parser_display_idx_out_of_range;
             }
-            displayIdx -= 15;
+            displayIdx -= 17;
             return printExpert(ctx, displayIdx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount);
         }
     }
@@ -1050,7 +1269,7 @@ static parser_error_t printBecomeValidatorTxn(  const parser_context_t *ctx,
 }
 
 
-static parser_error_t printWithdrawTxn( const parser_context_t *ctx,
+static __attribute__((noinline)) parser_error_t printWithdrawTxn( const parser_context_t *ctx,
                                         uint8_t displayIdx,
                                         char *outKey, uint16_t outKeyLen,
                                         char *outVal, uint16_t outValLen,
@@ -1063,6 +1282,10 @@ static parser_error_t printWithdrawTxn( const parser_context_t *ctx,
     const bool hasMemo = hasMemoToPrint(ctx);
     if (displayIdx >= 3 && !hasMemo) {
         displayIdx++;
+    }
+
+    if(displayIdx >= 4 && app_mode_expert()) {
+        displayIdx += 2;
     }
 
     const tx_withdraw_t *withdraw = &ctx->tx_obj->withdraw;
@@ -1093,19 +1316,30 @@ static parser_error_t printWithdrawTxn( const parser_context_t *ctx,
         case 3:
             CHECK_ERROR(printMemo(ctx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount))
             break;
+        case 4:
+            if(ctx->tx_obj->transaction.header.fees.symbol == NULL) {
+                snprintf(outKey, outKeyLen, "Fee token");
+                CHECK_ERROR(printAddressAlt(&ctx->tx_obj->transaction.header.fees.address, outVal, outValLen, pageIdx, pageCount))
+            } else {
+                CHECK_ERROR(printFee(ctx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount))
+            }
+            break;
+        case 5:
+            CHECK_ERROR(printFee(ctx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount))
+            break;
 
         default:
             if (!app_mode_expert()) {
                return parser_display_idx_out_of_range;
             }
-            displayIdx -= 4;
+            displayIdx -= 6;
             return printExpert(ctx, displayIdx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount);
     }
 
     return parser_ok;
 }
 
-static parser_error_t printCommissionChangeTxn( const parser_context_t *ctx,
+static __attribute__((noinline)) parser_error_t printCommissionChangeTxn( const parser_context_t *ctx,
                                                 uint8_t displayIdx,
                                                 char *outKey, uint16_t outKeyLen,
                                                 char *outVal, uint16_t outValLen,
@@ -1114,6 +1348,9 @@ static parser_error_t printCommissionChangeTxn( const parser_context_t *ctx,
     const bool hasMemo = hasMemoToPrint(ctx);
     if (displayIdx >= 3 && !hasMemo) {
         displayIdx++;
+    }
+    if(displayIdx >= 4 && app_mode_expert()) {
+        displayIdx += 2;
     }
 
     switch (displayIdx) {
@@ -1136,19 +1373,30 @@ static parser_error_t printCommissionChangeTxn( const parser_context_t *ctx,
         case 3:
             CHECK_ERROR(printMemo(ctx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount))
             break;
+        case 4:
+            if(ctx->tx_obj->transaction.header.fees.symbol == NULL) {
+                snprintf(outKey, outKeyLen, "Fee token");
+                CHECK_ERROR(printAddressAlt(&ctx->tx_obj->transaction.header.fees.address, outVal, outValLen, pageIdx, pageCount))
+            } else {
+                CHECK_ERROR(printFee(ctx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount))
+            }
+            break;
+        case 5:
+            CHECK_ERROR(printFee(ctx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount))
+            break;
 
         default:
             if (!app_mode_expert()) {
                 return parser_display_idx_out_of_range;
             }
-            displayIdx -= 4;
+            displayIdx -= 6;
             return printExpert(ctx, displayIdx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount);
     }
 
     return parser_ok;
 }
 
-static parser_error_t printIBCTxn( const parser_context_t *ctx,
+static __attribute__((noinline)) parser_error_t printIBCTxn( const parser_context_t *ctx,
                                     uint8_t displayIdx,
                                     char *outKey, uint16_t outKeyLen,
                                     char *outVal, uint16_t outValLen,
@@ -1161,21 +1409,27 @@ static parser_error_t printIBCTxn( const parser_context_t *ctx,
     // Compute number of spends/outs in the builder tx , and number of itemns to be printer for each
     uint32_t n_spends = ctx->tx_obj->transaction.sections.maspBuilder.builder.sapling_builder.n_spends * (uint32_t) ctx->tx_obj->transaction.isMasp;
     uint32_t n_outs = ctx->tx_obj->transaction.sections.maspBuilder.builder.sapling_builder.n_outputs * (uint32_t) ctx->tx_obj->transaction.isMasp;
-    uint16_t spend_index = 0;
-    uint16_t out_index = 0;
 
     const uint8_t sourcesStart = 9;
     const uint8_t spendsStart = sourcesStart + 2*ctx->tx_obj->ibc.transfer.non_masp_sources_len + ctx->tx_obj->ibc.transfer.no_symbol_sources;
-    const uint8_t targetsStart = spendsStart + 3*n_spends;
+    const uint8_t targetsStart = spendsStart + 2*n_spends + ctx->tx_obj->transaction.sections.maspBuilder.builder.sapling_builder.no_symbol_spends;
     const uint8_t outputsStart = targetsStart + 2*ctx->tx_obj->ibc.transfer.non_masp_targets_len + ctx->tx_obj->ibc.transfer.no_symbol_targets;
-    const uint8_t memoStart = outputsStart + 3*n_outs;
+    const uint8_t memoStart = outputsStart + 2*n_outs + ctx->tx_obj->transaction.sections.maspBuilder.builder.sapling_builder.no_symbol_outputs;
     const uint8_t expertStart = memoStart + (ctx->tx_obj->transaction.header.memoSection != NULL);
-    AddressAlt source_address;
-    AddressAlt target_address;
-    AddressAlt token;
-    bytes_t namount;
+    AddressAlt source_address = {0};
+    AddressAlt target_address = {0};
+    AddressAlt token = {0};
+    bytes_t namount = {0};
     uint8_t amount_denom = 0;
     const char* symbol = NULL;
+    const uint8_t *stoken = NULL;
+    const uint8_t *rtoken = NULL;
+    masp_asset_data_t asset_data = {0};
+    uint32_t asset_idx = 0;
+    const uint8_t *amount = {0};
+    char tmp_buf[300] = {0};
+    uint8_t tmp_amount[32] = {0};
+    bytes_t amount_bytes = {tmp_amount, 32};
 
     const tx_ibc_t *ibc = &ctx->tx_obj->ibc;
 
@@ -1195,15 +1449,24 @@ static parser_error_t printIBCTxn( const parser_context_t *ctx,
                 displayIdx -= 2 + (symbol == NULL);
             } else {
                 displayIdx += 9;
-            break;
+                break;
             }
         }
     } else if (spendsStart <= displayIdx && displayIdx < targetsStart) {
-        spend_index = (displayIdx - spendsStart) / 3;
-        displayIdx = 15 + ((displayIdx - spendsStart) % 3);
+        displayIdx -= spendsStart;
+        for(uint32_t i = 0; i < n_spends; i++) {
+            getSpendfromIndex(i, &spend);
+            stoken = spend.ptr + EXTENDED_FVK_LEN + DIVERSIFIER_LEN;
+            amount = spend.ptr + EXTENDED_FVK_LEN + DIVERSIFIER_LEN + ASSET_ID_LEN;
+            CHECK_ERROR(findAssetData(&ctx->tx_obj->transaction.sections.maspBuilder, stoken, &asset_data, &asset_idx))
 
-        // Get new spend pointer
-        getSpendfromIndex(spend_index, &spend);
+            if (displayIdx >= (asset_data.symbol == NULL ? 3 : 2)) {
+                displayIdx -= (asset_data.symbol == NULL ? 3 : 2);
+            } else {
+                displayIdx += 15;  // Base case number for spends
+                break;
+            }
+        }
     } else if (targetsStart <= displayIdx && displayIdx < outputsStart) {
         displayIdx -= targetsStart;
         parser_context_t targets_ctx = {.buffer = ctx->tx_obj->ibc.transfer.targets.ptr, .bufferLen = ctx->tx_obj->ibc.transfer.targets.len, .offset = 0, .tx_obj = NULL};
@@ -1219,23 +1482,30 @@ static parser_error_t printIBCTxn( const parser_context_t *ctx,
             }
         }
     } else if(outputsStart <= displayIdx && displayIdx < memoStart) {
-        out_index = (displayIdx - outputsStart) / 3;
-        displayIdx = 18 + ((displayIdx - outputsStart) % 3);
-        // Get new output pointer
-        getOutputfromIndex(out_index, &out);
+        displayIdx -= outputsStart;
+        for(uint32_t i = 0; i < n_outs; i++) {
+            getOutputfromIndex(i, &out);
+            rtoken = out.ptr + (out.ptr[0] ? OVK_PLUS_CHECK_BYTE : 1) + PAYMENT_ADDR_LEN;
+            amount = out.ptr + (out.ptr[0] ? OVK_PLUS_CHECK_BYTE : 1) + PAYMENT_ADDR_LEN + ASSET_ID_LEN;
+            CHECK_ERROR(findAssetData(&ctx->tx_obj->transaction.sections.maspBuilder, rtoken, &asset_data, &asset_idx))
+
+            if (displayIdx >= (asset_data.symbol == NULL ? 3 : 2)) {
+                displayIdx -= (asset_data.symbol == NULL ? 3 : 2);
+            } else {
+                displayIdx += 18;  // Base case number for outputs
+                break;
+            }
+        }
     } else if(memoStart <= displayIdx && displayIdx < expertStart) {
         displayIdx = 21;
     } else if(expertStart <= displayIdx) {
         displayIdx = 22 + (displayIdx - expertStart);
     }
 
-    char tmp_buf[300] = {0};
-    uint8_t tmp_amount[32] = {0};
-    bytes_t amount_bytes = {tmp_amount, 32};
-    const uint8_t *amount = {0};
-    const uint8_t *rtoken = {0};
-    uint32_t asset_idx;
-    masp_asset_data_t asset_data;
+    if(displayIdx >= 22 && app_mode_expert()) {
+        displayIdx += 2;
+    }
+
     switch (displayIdx) {
         case 0:
             snprintf(outKey, outKeyLen, "Type");
@@ -1348,25 +1618,28 @@ static parser_error_t printIBCTxn( const parser_context_t *ctx,
 
             break;
         case 16: {
-            snprintf(outKey, outKeyLen, "Sending Token");
-            const uint8_t *stoken = spend.ptr + EXTENDED_FVK_LEN + DIVERSIFIER_LEN;
-            CHECK_ERROR(findAssetData(&ctx->tx_obj->transaction.sections.maspBuilder, stoken, &asset_data, &asset_idx))
-            if(asset_idx < ctx->tx_obj->transaction.sections.maspBuilder.n_asset_type) {
-                CHECK_ERROR(printAddressAlt(&asset_data.token, outVal, outValLen, pageIdx, pageCount))
+            if(asset_data.symbol != NULL) {
+                snprintf(outKey, outKeyLen, "Sending Amount");
+                CHECK_NULL(amount)
+                MEMCPY(tmp_amount + (asset_data.position * sizeof(uint64_t)), amount, sizeof(uint64_t));
+                printAmount(&amount_bytes, false, asset_data.denom, asset_data.symbol, outVal, outValLen, pageIdx, pageCount);
             } else {
-                array_to_hexstr(tmp_buf, sizeof(tmp_buf), stoken, ASSET_ID_LEN);
-                pageString(outVal, outValLen, (const char*) tmp_buf, pageIdx, pageCount);
+                snprintf(outKey, outKeyLen, "Sending Token");
+                if(asset_idx < ctx->tx_obj->transaction.sections.maspBuilder.n_asset_type) {
+                    CHECK_ERROR(printAddressAlt(&asset_data.token, outVal, outValLen, pageIdx, pageCount))
+                } else {
+                    array_to_hexstr(tmp_buf, sizeof(tmp_buf), stoken, ASSET_ID_LEN);
+                    pageString(outVal, outValLen, (const char*) tmp_buf, pageIdx, pageCount);
+                }
             }
             break;
         } case 17: {
             snprintf(outKey, outKeyLen, "Sending Amount");
-            const uint8_t *stoken = spend.ptr + EXTENDED_FVK_LEN + DIVERSIFIER_LEN;
-            amount = spend.ptr + EXTENDED_FVK_LEN + DIVERSIFIER_LEN + ASSET_ID_LEN;
-            CHECK_ERROR(findAssetData(&ctx->tx_obj->transaction.sections.maspBuilder, stoken, &asset_data, &asset_idx))
-              if(asset_idx < ctx->tx_obj->transaction.sections.maspBuilder.n_asset_type) {
+            CHECK_NULL(amount)
+            if(asset_idx < ctx->tx_obj->transaction.sections.maspBuilder.n_asset_type) {
                 // tmp_amount is a 32 bytes array that represents an uint64[4] array, position will determine amount postion inside the array
                 MEMCPY(tmp_amount + (asset_data.position * sizeof(uint64_t)), amount, sizeof(uint64_t));
-                printAmount(&amount_bytes, false, asset_data.denom, "", outVal, outValLen, pageIdx, pageCount);
+                printAmount(&amount_bytes, false, asset_data.denom, asset_data.symbol, outVal, outValLen, pageIdx, pageCount);
             } else {
                 MEMCPY(tmp_amount, amount, sizeof(uint64_t));
                 printAmount(&amount_bytes, false, 0, "", outVal, outValLen, pageIdx, pageCount);
@@ -1389,24 +1662,27 @@ static parser_error_t printIBCTxn( const parser_context_t *ctx,
             pageString(outVal, outValLen, (const char*) tmp_buf, pageIdx, pageCount);
             break;
         case 19:
-            snprintf(outKey, outKeyLen, "Receiving Token");
-            rtoken = out.ptr + (out.ptr[0] ? OVK_PLUS_CHECK_BYTE : 1) + PAYMENT_ADDR_LEN;
-            CHECK_ERROR(findAssetData(&ctx->tx_obj->transaction.sections.maspBuilder, rtoken, &asset_data, &asset_idx))
-            if(asset_idx < ctx->tx_obj->transaction.sections.maspBuilder.n_asset_type) {
-                CHECK_ERROR(printAddressAlt(&asset_data.token, outVal, outValLen, pageIdx, pageCount))
+            if(asset_data.symbol != NULL) {
+                snprintf(outKey, outKeyLen, "Receiving Amount");
+                CHECK_NULL(amount)
+                MEMCPY(tmp_amount + (asset_data.position * sizeof(uint64_t)), amount, sizeof(uint64_t));
+                printAmount(&amount_bytes, false, asset_data.denom, asset_data.symbol, outVal, outValLen, pageIdx, pageCount);
             } else {
-                array_to_hexstr(tmp_buf, sizeof(tmp_buf), rtoken, ASSET_ID_LEN);
-                pageString(outVal, outValLen, (const char*) tmp_buf, pageIdx, pageCount);
+                snprintf(outKey, outKeyLen, "Receiving Token");
+                if(asset_idx < ctx->tx_obj->transaction.sections.maspBuilder.n_asset_type) {
+                    CHECK_ERROR(printAddressAlt(&asset_data.token, outVal, outValLen, pageIdx, pageCount))
+                } else {
+                    array_to_hexstr(tmp_buf, sizeof(tmp_buf), rtoken, ASSET_ID_LEN);
+                    pageString(outVal, outValLen, (const char*) tmp_buf, pageIdx, pageCount);
+                }
             }
             break;
         case 20: {
             snprintf(outKey, outKeyLen, "Receiving Amount");
-            rtoken = out.ptr + (out.ptr[0] ? OVK_PLUS_CHECK_BYTE : 1) + PAYMENT_ADDR_LEN;
-            amount = out.ptr + (out.ptr[0] ? OVK_PLUS_CHECK_BYTE : 1) + PAYMENT_ADDR_LEN + ASSET_ID_LEN;
-            CHECK_ERROR(findAssetData(&ctx->tx_obj->transaction.sections.maspBuilder, rtoken, &asset_data, &asset_idx))
+            CHECK_NULL(amount)
             if(asset_idx < ctx->tx_obj->transaction.sections.maspBuilder.n_asset_type) {
                 MEMCPY(tmp_amount + (asset_data.position * sizeof(uint64_t)), amount, sizeof(uint64_t));
-                printAmount(&amount_bytes, false, asset_data.denom, "", outVal, outValLen, pageIdx, pageCount);
+                printAmount(&amount_bytes, false, asset_data.denom, asset_data.symbol, outVal, outValLen, pageIdx, pageCount);
             } else {
                 MEMCPY(tmp_amount, amount, sizeof(uint64_t));
                 printAmount(&amount_bytes, false, 0, "", outVal, outValLen, pageIdx, pageCount);
@@ -1416,18 +1692,29 @@ static parser_error_t printIBCTxn( const parser_context_t *ctx,
         case 21:
             CHECK_ERROR(printMemo(ctx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount))
             break;
+        case 22:
+            if(ctx->tx_obj->transaction.header.fees.symbol == NULL) {
+                snprintf(outKey, outKeyLen, "Fee token");
+                CHECK_ERROR(printAddressAlt(&ctx->tx_obj->transaction.header.fees.address, outVal, outValLen, pageIdx, pageCount))
+            } else {
+                CHECK_ERROR(printFee(ctx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount))
+            }
+            break;
+        case 23:
+            CHECK_ERROR(printFee(ctx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount))
+            break;
         default:
             if (!app_mode_expert()) {
                return parser_display_idx_out_of_range;
             }
-            displayIdx -= 22;
+            displayIdx -= 24;
             return printExpert(ctx, displayIdx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount);
     }
 
     return parser_ok;
 }
 
-static parser_error_t printTokenId( const parser_context_t *ctx,
+static __attribute__((noinline)) parser_error_t printTokenId( const parser_context_t *ctx,
                                     uint8_t tokenIdx,
                                     char *outVal, uint16_t outValLen,
                                     uint8_t pageIdx, uint8_t *pageCount) {
@@ -1472,7 +1759,7 @@ static parser_error_t printTokenId( const parser_context_t *ctx,
 
 }
 
-static parser_error_t printNFTIBCTxn( const parser_context_t *ctx,
+static __attribute__((noinline)) parser_error_t printNFTIBCTxn( const parser_context_t *ctx,
                                     uint8_t displayIdx,
                                     char *outKey, uint16_t outKeyLen,
                                     char *outVal, uint16_t outValLen,
@@ -1485,21 +1772,27 @@ static parser_error_t printNFTIBCTxn( const parser_context_t *ctx,
     // Compute number of spends/outs in the builder tx , and number of itemns to be printer for each
     uint32_t n_spends = ctx->tx_obj->transaction.sections.maspBuilder.builder.sapling_builder.n_spends * (uint32_t) ctx->tx_obj->transaction.isMasp;
     uint32_t n_outs = ctx->tx_obj->transaction.sections.maspBuilder.builder.sapling_builder.n_outputs * (uint32_t) ctx->tx_obj->transaction.isMasp;
-    uint16_t spend_index = 0;
-    uint16_t out_index = 0;
 
     const uint8_t sourcesStart = 10;
     const uint8_t spendsStart = sourcesStart + 2*ctx->tx_obj->ibc.transfer.non_masp_sources_len + ctx->tx_obj->ibc.transfer.no_symbol_sources;
-    const uint8_t targetsStart = spendsStart + 3*n_spends;
+    const uint8_t targetsStart = spendsStart + 2*n_spends + + ctx->tx_obj->transaction.sections.maspBuilder.builder.sapling_builder.no_symbol_spends;
     const uint8_t outputsStart = targetsStart + 2*ctx->tx_obj->ibc.transfer.non_masp_targets_len + ctx->tx_obj->ibc.transfer.no_symbol_targets;
-    const uint8_t memoStart = outputsStart + 3*n_outs;
+    const uint8_t memoStart = outputsStart + 2*n_outs + ctx->tx_obj->transaction.sections.maspBuilder.builder.sapling_builder.no_symbol_outputs;
     const uint8_t expertStart = memoStart + (ctx->tx_obj->transaction.header.memoSection != NULL);
-    AddressAlt source_address;
-    AddressAlt target_address;
-    AddressAlt token;
-    bytes_t namount;
+    AddressAlt source_address = {0};
+    AddressAlt target_address = {0};
+    AddressAlt token = {0};
+    bytes_t namount = {0};
     uint8_t amount_denom = 0;
     const char* symbol = NULL;
+    const uint8_t *stoken = NULL;
+    const uint8_t *rtoken = NULL;
+    masp_asset_data_t asset_data = {0};
+    uint32_t asset_idx = 0;
+    const uint8_t *amount = {0};
+    char tmp_buf[300] = {0};
+    uint8_t tmp_amount[32] = {0};
+    bytes_t amount_bytes = {tmp_amount, 32};
 
     const tx_ibc_t *ibc = &ctx->tx_obj->ibc;
 
@@ -1526,15 +1819,24 @@ static parser_error_t printNFTIBCTxn( const parser_context_t *ctx,
                 displayIdx -= 2 + (symbol == NULL);
             } else {
                 displayIdx += 10;
-            break;
+                break;
             }
         }
     } else if (spendsStart <= displayIdx && displayIdx < targetsStart) {
-        spend_index = (displayIdx - spendsStart) / 3;
-        displayIdx = 16 + ((displayIdx - spendsStart) % 3);
+        displayIdx -= spendsStart;
+        for(uint32_t i = 0; i < n_spends; i++) {
+            getSpendfromIndex(i, &spend);
+            stoken = spend.ptr + EXTENDED_FVK_LEN + DIVERSIFIER_LEN;
+            amount = spend.ptr + EXTENDED_FVK_LEN + DIVERSIFIER_LEN + ASSET_ID_LEN;
+            CHECK_ERROR(findAssetData(&ctx->tx_obj->transaction.sections.maspBuilder, stoken, &asset_data, &asset_idx))
 
-        // Get new spend pointer
-        getSpendfromIndex(spend_index, &spend);
+            if (displayIdx >= (asset_data.symbol == NULL ? 3 : 2)) {
+                displayIdx -= (asset_data.symbol == NULL ? 3 : 2);
+            } else {
+                displayIdx += 16;  // Base case number for spends
+                break;
+            }
+        }
     } else if (targetsStart <= displayIdx && displayIdx < outputsStart) {
         displayIdx -= targetsStart;
         parser_context_t targets_ctx = {.buffer = ctx->tx_obj->ibc.transfer.targets.ptr, .bufferLen = ctx->tx_obj->ibc.transfer.targets.len, .offset = 0, .tx_obj = NULL};
@@ -1550,23 +1852,30 @@ static parser_error_t printNFTIBCTxn( const parser_context_t *ctx,
             }
         }
     } else if(outputsStart <= displayIdx && displayIdx < memoStart) {
-        out_index = (displayIdx - outputsStart) / 3;
-        displayIdx = 19 + ((displayIdx - outputsStart) % 3);
-        // Get new output pointer
-        getOutputfromIndex(out_index, &out);
+        displayIdx -= outputsStart;
+        for(uint32_t i = 0; i < n_outs; i++) {
+            getOutputfromIndex(i, &out);
+            rtoken = out.ptr + (out.ptr[0] ? OVK_PLUS_CHECK_BYTE : 1) + PAYMENT_ADDR_LEN;
+            amount = out.ptr + (out.ptr[0] ? OVK_PLUS_CHECK_BYTE : 1) + PAYMENT_ADDR_LEN + ASSET_ID_LEN;
+            CHECK_ERROR(findAssetData(&ctx->tx_obj->transaction.sections.maspBuilder, rtoken, &asset_data, &asset_idx))
+
+            if (displayIdx >= (asset_data.symbol == NULL ? 3 : 2)) {
+                displayIdx -= (asset_data.symbol == NULL ? 3 : 2);
+            } else {
+                displayIdx += 19;  // Base case number for outputs
+                break;
+            }
+        }
     } else if(memoStart <= displayIdx && displayIdx < expertStart) {
         displayIdx = 22;
     } else if(expertStart <= displayIdx) {
         displayIdx = 23 + (displayIdx - expertStart);
     }
 
-    char tmp_buf[300] = {0};
-    uint8_t tmp_amount[32] = {0};
-    bytes_t amount_bytes = {tmp_amount, 32};
-    const uint8_t *amount = {0};
-    const uint8_t *rtoken = {0};
-    uint32_t asset_idx;
-    masp_asset_data_t asset_data;
+    if(displayIdx >= 23 && app_mode_expert()) {
+        displayIdx += 2;
+    }
+
     switch (displayIdx) {
         case 0:
             snprintf(outKey, outKeyLen, "Type");
@@ -1682,25 +1991,28 @@ static parser_error_t printNFTIBCTxn( const parser_context_t *ctx,
 
             break;
         case 17: {
-            snprintf(outKey, outKeyLen, "Sending Token");
-            const uint8_t *stoken = spend.ptr + EXTENDED_FVK_LEN + DIVERSIFIER_LEN;
-            CHECK_ERROR(findAssetData(&ctx->tx_obj->transaction.sections.maspBuilder, stoken, &asset_data, &asset_idx))
-            if(asset_idx < ctx->tx_obj->transaction.sections.maspBuilder.n_asset_type) {
-                CHECK_ERROR(printAddressAlt(&asset_data.token, outVal, outValLen, pageIdx, pageCount))
+            if(asset_data.symbol != NULL) {
+                snprintf(outKey, outKeyLen, "Sending Amount");
+                CHECK_NULL(amount)
+                MEMCPY(tmp_amount + (asset_data.position * sizeof(uint64_t)), amount, sizeof(uint64_t));
+                printAmount(&amount_bytes, false, asset_data.denom, asset_data.symbol, outVal, outValLen, pageIdx, pageCount);
             } else {
-                array_to_hexstr(tmp_buf, sizeof(tmp_buf), stoken, ASSET_ID_LEN);
-                pageString(outVal, outValLen, (const char*) tmp_buf, pageIdx, pageCount);
+                snprintf(outKey, outKeyLen, "Sending Token");
+                if(asset_idx < ctx->tx_obj->transaction.sections.maspBuilder.n_asset_type) {
+                    CHECK_ERROR(printAddressAlt(&asset_data.token, outVal, outValLen, pageIdx, pageCount))
+                } else {
+                    array_to_hexstr(tmp_buf, sizeof(tmp_buf), stoken, ASSET_ID_LEN);
+                    pageString(outVal, outValLen, (const char*) tmp_buf, pageIdx, pageCount);
+                }
             }
             break;
         } case 18: {
             snprintf(outKey, outKeyLen, "Sending Amount");
-            const uint8_t *stoken = spend.ptr + EXTENDED_FVK_LEN + DIVERSIFIER_LEN;
-            amount = spend.ptr + EXTENDED_FVK_LEN + DIVERSIFIER_LEN + ASSET_ID_LEN;
-            CHECK_ERROR(findAssetData(&ctx->tx_obj->transaction.sections.maspBuilder, stoken, &asset_data, &asset_idx))
-              if(asset_idx < ctx->tx_obj->transaction.sections.maspBuilder.n_asset_type) {
+            CHECK_NULL(amount)
+            if(asset_idx < ctx->tx_obj->transaction.sections.maspBuilder.n_asset_type) {
                 // tmp_amount is a 32 bytes array that represents an uint64[4] array, position will determine amount postion inside the array
                 MEMCPY(tmp_amount + (asset_data.position * sizeof(uint64_t)), amount, sizeof(uint64_t));
-                printAmount(&amount_bytes, false, asset_data.denom, "", outVal, outValLen, pageIdx, pageCount);
+                printAmount(&amount_bytes, false, asset_data.denom, asset_data.symbol, outVal, outValLen, pageIdx, pageCount);
             } else {
                 MEMCPY(tmp_amount, amount, sizeof(uint64_t));
                 printAmount(&amount_bytes, false, 0, "", outVal, outValLen, pageIdx, pageCount);
@@ -1723,24 +2035,27 @@ static parser_error_t printNFTIBCTxn( const parser_context_t *ctx,
             pageString(outVal, outValLen, (const char*) tmp_buf, pageIdx, pageCount);
             break;
         case 20:
-            snprintf(outKey, outKeyLen, "Receiving Token");
-            rtoken = out.ptr + (out.ptr[0] ? OVK_PLUS_CHECK_BYTE : 1) + PAYMENT_ADDR_LEN;
-            CHECK_ERROR(findAssetData(&ctx->tx_obj->transaction.sections.maspBuilder, rtoken, &asset_data, &asset_idx))
-            if(asset_idx < ctx->tx_obj->transaction.sections.maspBuilder.n_asset_type) {
-                CHECK_ERROR(printAddressAlt(&asset_data.token, outVal, outValLen, pageIdx, pageCount))
+            if(asset_data.symbol != NULL) {
+                snprintf(outKey, outKeyLen, "Receiving Amount");
+                CHECK_NULL(amount)
+                MEMCPY(tmp_amount + (asset_data.position * sizeof(uint64_t)), amount, sizeof(uint64_t));
+                printAmount(&amount_bytes, false, asset_data.denom, asset_data.symbol, outVal, outValLen, pageIdx, pageCount);
             } else {
-                array_to_hexstr(tmp_buf, sizeof(tmp_buf), rtoken, ASSET_ID_LEN);
-                pageString(outVal, outValLen, (const char*) tmp_buf, pageIdx, pageCount);
+                snprintf(outKey, outKeyLen, "Receiving Token");
+                if(asset_idx < ctx->tx_obj->transaction.sections.maspBuilder.n_asset_type) {
+                    CHECK_ERROR(printAddressAlt(&asset_data.token, outVal, outValLen, pageIdx, pageCount))
+                } else {
+                    array_to_hexstr(tmp_buf, sizeof(tmp_buf), rtoken, ASSET_ID_LEN);
+                    pageString(outVal, outValLen, (const char*) tmp_buf, pageIdx, pageCount);
+                }
             }
             break;
         case 21: {
             snprintf(outKey, outKeyLen, "Receiving Amount");
-            rtoken = out.ptr + (out.ptr[0] ? OVK_PLUS_CHECK_BYTE : 1) + PAYMENT_ADDR_LEN;
-            amount = out.ptr + (out.ptr[0] ? OVK_PLUS_CHECK_BYTE : 1) + PAYMENT_ADDR_LEN + ASSET_ID_LEN;
-            CHECK_ERROR(findAssetData(&ctx->tx_obj->transaction.sections.maspBuilder, rtoken, &asset_data, &asset_idx))
+            CHECK_NULL(amount)
             if(asset_idx < ctx->tx_obj->transaction.sections.maspBuilder.n_asset_type) {
                 MEMCPY(tmp_amount + (asset_data.position * sizeof(uint64_t)), amount, sizeof(uint64_t));
-                printAmount(&amount_bytes, false, asset_data.denom, "", outVal, outValLen, pageIdx, pageCount);
+                printAmount(&amount_bytes, false, asset_data.denom, asset_data.symbol, outVal, outValLen, pageIdx, pageCount);
             } else {
                 MEMCPY(tmp_amount, amount, sizeof(uint64_t));
                 printAmount(&amount_bytes, false, 0, "", outVal, outValLen, pageIdx, pageCount);
@@ -1750,18 +2065,29 @@ static parser_error_t printNFTIBCTxn( const parser_context_t *ctx,
         case 22:
             CHECK_ERROR(printMemo(ctx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount))
             break;
+        case 23:
+            if(ctx->tx_obj->transaction.header.fees.symbol == NULL) {
+                snprintf(outKey, outKeyLen, "Fee token");
+                CHECK_ERROR(printAddressAlt(&ctx->tx_obj->transaction.header.fees.address, outVal, outValLen, pageIdx, pageCount))
+            } else {
+                CHECK_ERROR(printFee(ctx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount))
+            }
+            break;
+        case 24:
+            CHECK_ERROR(printFee(ctx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount))
+            break;
         default:
             if (!app_mode_expert()) {
                return parser_display_idx_out_of_range;
             }
-            displayIdx -= 23;
+            displayIdx -= 25;
             return printExpert(ctx, displayIdx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount);
     }
 
     return parser_ok;
 }
 
-static parser_error_t printUpdateStewardCommission( const parser_context_t *ctx,
+static __attribute__((noinline)) parser_error_t printUpdateStewardCommission( const parser_context_t *ctx,
                                                 uint8_t displayIdx,
                                                 char *outKey, uint16_t outKeyLen,
                                                 char *outVal, uint16_t outValLen,
@@ -1813,17 +2139,37 @@ static parser_error_t printUpdateStewardCommission( const parser_context_t *ctx,
         return parser_ok;
     }
 
+    if(app_mode_expert()) {
+        displayIdx += 2;
+    }
+    uint8_t has_memo = ctx->tx_obj->transaction.header.memoSection != NULL ? 1 : 0;
+
+    if(displayIdx < 2 + 2 * updateStewardCommission->commissionLen + 1 + has_memo) {
+        if(ctx->tx_obj->transaction.header.fees.symbol == NULL) {
+            snprintf(outKey, outKeyLen, "Fee token");
+            CHECK_ERROR(printAddressAlt(&ctx->tx_obj->transaction.header.fees.address, outVal, outValLen, pageIdx, pageCount))
+        } else {
+            CHECK_ERROR(printFee(ctx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount))
+        }
+        return parser_ok;
+    }
+
+    if(displayIdx < 2 + 2 * updateStewardCommission->commissionLen + 2 + has_memo) {
+        CHECK_ERROR(printFee(ctx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount))
+        return parser_ok;
+    }
+
 
     if (!app_mode_expert()) {
         return parser_display_idx_out_of_range;
     }
     // displayIdx will be greater than the right part. No underflow
     const bool hasMemo = hasMemoToPrint(ctx);
-    const uint8_t adjustedDisplayIdx  = displayIdx - 2 - (2 * updateStewardCommission->commissionLen) - (hasMemo ? 1 : 0);
+    const uint8_t adjustedDisplayIdx  = displayIdx - 2 - (2 * updateStewardCommission->commissionLen) - (hasMemo ? 1 : 0) - 2;
     return printExpert(ctx, adjustedDisplayIdx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount);
 }
 
-static parser_error_t printChangeValidatorMetadata(  const parser_context_t *ctx,
+static __attribute__((noinline)) parser_error_t printChangeValidatorMetadata(  const parser_context_t *ctx,
                                               uint8_t displayIdx,
                                               char *outKey, uint16_t outKeyLen,
                                               char *outVal, uint16_t outValLen,
@@ -1856,6 +2202,10 @@ static parser_error_t printChangeValidatorMetadata(  const parser_context_t *ctx
     const bool hasMemo = hasMemoToPrint(ctx);
     if (displayIdx >= 9 && !hasMemo) {
         displayIdx++;
+    }
+
+    if(displayIdx >= 10 && app_mode_expert()) {
+        displayIdx += 2;
     }
 
     switch (displayIdx) {
@@ -1929,12 +2279,22 @@ static parser_error_t printChangeValidatorMetadata(  const parser_context_t *ctx
         case 9:
             CHECK_ERROR(printMemo(ctx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount))
             break;
-
+        case 10:
+            if(ctx->tx_obj->transaction.header.fees.symbol == NULL) {
+                snprintf(outKey, outKeyLen, "Fee token");
+                CHECK_ERROR(printAddressAlt(&ctx->tx_obj->transaction.header.fees.address, outVal, outValLen, pageIdx, pageCount))
+            } else {
+                CHECK_ERROR(printFee(ctx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount))
+            }
+            break;
+        case 11:
+            CHECK_ERROR(printFee(ctx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount))
+            break;
         default: {
             if (!app_mode_expert()) {
                 return parser_display_idx_out_of_range;
             }
-            displayIdx -= 10;
+            displayIdx -= 12;
             return printExpert(ctx, displayIdx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount);
         }
     }
@@ -1942,7 +2302,7 @@ static parser_error_t printChangeValidatorMetadata(  const parser_context_t *ctx
     return parser_ok;
 }
 
-static parser_error_t printBridgePoolTransfer(  const parser_context_t *ctx,
+static __attribute__((noinline)) parser_error_t printBridgePoolTransfer(  const parser_context_t *ctx,
                                               uint8_t displayIdx,
                                               char *outKey, uint16_t outKeyLen,
                                               char *outVal, uint16_t outValLen,
@@ -1953,6 +2313,10 @@ static parser_error_t printBridgePoolTransfer(  const parser_context_t *ctx,
     const bool hasMemo = hasMemoToPrint(ctx);
     if (displayIdx >= 9 && !hasMemo) {
         displayIdx++;
+    }
+
+    if(displayIdx >= 10 && app_mode_expert()) {
+        displayIdx += 2;
     }
 
     switch (displayIdx) {
@@ -2017,12 +2381,22 @@ static parser_error_t printBridgePoolTransfer(  const parser_context_t *ctx,
         case 9:
             CHECK_ERROR(printMemo(ctx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount))
             break;
-
+        case 10:
+            if(ctx->tx_obj->transaction.header.fees.symbol == NULL) {
+                snprintf(outKey, outKeyLen, "Fee token");
+                CHECK_ERROR(printAddressAlt(&ctx->tx_obj->transaction.header.fees.address, outVal, outValLen, pageIdx, pageCount))
+            } else {
+                CHECK_ERROR(printFee(ctx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount))
+            }
+            break;
+        case 11:
+            CHECK_ERROR(printFee(ctx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount))
+            break;
         default: {
             if (!app_mode_expert()) {
                 return parser_display_idx_out_of_range;
             }
-            displayIdx -= 10;
+            displayIdx -= 12;
             return printExpert(ctx, displayIdx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount);
         }
     }
@@ -2030,11 +2404,112 @@ static parser_error_t printBridgePoolTransfer(  const parser_context_t *ctx,
     return parser_ok;
 }
 
-parser_error_t printTxnFields(const parser_context_t *ctx,
+static __attribute__((noinline)) parser_error_t printRedelegate(const parser_context_t *ctx,
+                                  uint8_t displayIdx,
+                                  char *outKey, uint16_t outKeyLen,
+                                  char *outVal, uint16_t outValLen,
+                                  uint8_t pageIdx, uint8_t *pageCount) {
+
+    if (ctx == NULL || outKey == NULL || outVal == NULL || pageCount == NULL) {
+        return parser_unexpected_error;
+
+    }
+    const bool hasMemo = ctx->tx_obj->transaction.header.memoSection != NULL;
+    if (displayIdx >= 5 && !hasMemo) {
+        displayIdx++;
+    }
+
+    if (displayIdx >= 6 && app_mode_expert()) {
+        displayIdx += 2;
+    }
+
+    const tx_redelegation_t *redelegation = &ctx->tx_obj->redelegation;
+    switch (displayIdx) {
+        case 0:
+            snprintf(outKey, outKeyLen, "Type");
+            snprintf(outVal, outValLen, "Redelegate");
+            if (app_mode_expert()) {
+                CHECK_ERROR(printCodeHash(&ctx->tx_obj->transaction.sections.code, outKey, outKeyLen,
+                                          outVal, outValLen, pageIdx, pageCount))
+            }
+            break;
+        case 1:
+            snprintf(outKey, outKeyLen, "Source Validator");
+            CHECK_ERROR(printAddressAlt(&redelegation->src_validator, outVal, outValLen, pageIdx, pageCount))
+            break;
+        case 2:
+            snprintf(outKey, outKeyLen, "Destination Validator");
+            CHECK_ERROR(printAddressAlt(&redelegation->dest_validator, outVal, outValLen, pageIdx, pageCount))
+            break;
+        case 3:
+            snprintf(outKey, outKeyLen, "Owner");
+            CHECK_ERROR(printAddressAlt(&redelegation->owner, outVal, outValLen, pageIdx, pageCount))
+            break;
+        case 4:
+            snprintf(outKey, outKeyLen, "Amount");
+            CHECK_ERROR(printAmount(&redelegation->amount, false, COIN_AMOUNT_DECIMAL_PLACES, "",
+                                    outVal, outValLen, pageIdx, pageCount))
+            break;
+        case 5:
+            CHECK_ERROR(printMemo(ctx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount))
+            break;
+        case 6:
+            if(ctx->tx_obj->transaction.header.fees.symbol == NULL) {
+                snprintf(outKey, outKeyLen, "Fee token");
+                CHECK_ERROR(printAddressAlt(&ctx->tx_obj->transaction.header.fees.address, outVal, outValLen, pageIdx, pageCount))
+            } else {
+                CHECK_ERROR(printFee(ctx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount))
+            }
+            break;
+        case 7:
+            snprintf(outKey, outKeyLen, "Fee");
+            CHECK_ERROR(printFee(ctx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount))
+            break;
+        default:
+            if (!app_mode_expert()) {
+               return parser_display_idx_out_of_range;
+            }
+            displayIdx -= 8;
+            return printExpert(ctx, displayIdx, outKey, outKeyLen, outVal, outValLen, pageIdx, pageCount);
+    }
+
+    return parser_ok;
+}
+
+parser_error_t parser_getNumItems(const parser_context_t *ctx, uint8_t *num_items) {
+    return getNumItems(ctx, num_items);
+}
+
+static void cleanOutput(char *outKey, uint16_t outKeyLen,
+                        char *outVal, uint16_t outValLen)
+{
+    MEMZERO(outKey, outKeyLen);
+    MEMZERO(outVal, outValLen);
+    snprintf(outKey, outKeyLen, "?");
+    snprintf(outVal, outValLen, " ");
+}
+
+static parser_error_t checkSanity(uint8_t numItems, uint8_t displayIdx)
+{
+    if ( displayIdx >= numItems) {
+        return parser_display_idx_out_of_range;
+    }
+    return parser_ok;
+}
+
+parser_error_t parser_getItem(const parser_context_t *ctx,
                               uint8_t displayIdx,
                               char *outKey, uint16_t outKeyLen,
                               char *outVal, uint16_t outValLen,
                               uint8_t pageIdx, uint8_t *pageCount) {
+
+    *pageCount = 1;
+    uint8_t numItems = 0;
+    CHECK_ERROR(parser_getNumItems(ctx, &numItems))
+    CHECK_APP_CANARY()
+
+    CHECK_ERROR(checkSanity(numItems, displayIdx))
+    cleanOutput(outKey, outKeyLen, outVal, outValLen);
 
     switch (ctx->tx_obj->typeTx) {
         case Bond:
