@@ -21,7 +21,7 @@
 
 #include "parser_common.h"
 #include "parser_impl.h"
-#include "parser.h"
+#include "common/parser.h"
 
 #include "crypto.h"
 #include "crypto_helper.h"
@@ -56,6 +56,14 @@ parser_error_t parser_parse(parser_context_t *ctx,
 }
 
 parser_error_t parser_validate(parser_context_t *ctx) {
+#if defined(COMPILE_MASP) && defined(LEDGER_SPECIFIC)
+    // Get change address for masp transactions
+    if(ctx->tx_obj->transaction.isMasp) {
+        crypto_get_change_address();
+
+    }
+#endif
+
     // Iterate through all items to check that all can be shown and are valid
     uint8_t numItems = 0;
     CHECK_ERROR(parser_getNumItems(ctx, &numItems))
@@ -70,41 +78,3 @@ parser_error_t parser_validate(parser_context_t *ctx) {
     return parser_ok;
 }
 
-parser_error_t parser_getNumItems(const parser_context_t *ctx, uint8_t *num_items) {
-    return getNumItems(ctx, num_items);
-}
-
-static void cleanOutput(char *outKey, uint16_t outKeyLen,
-                        char *outVal, uint16_t outValLen)
-{
-    MEMZERO(outKey, outKeyLen);
-    MEMZERO(outVal, outValLen);
-    snprintf(outKey, outKeyLen, "?");
-    snprintf(outVal, outValLen, " ");
-}
-
-static parser_error_t checkSanity(uint8_t numItems, uint8_t displayIdx)
-{
-    if ( displayIdx >= numItems) {
-        return parser_display_idx_out_of_range;
-    }
-    return parser_ok;
-}
-
-parser_error_t parser_getItem(const parser_context_t *ctx,
-                              uint8_t displayIdx,
-                              char *outKey, uint16_t outKeyLen,
-                              char *outVal, uint16_t outValLen,
-                              uint8_t pageIdx, uint8_t *pageCount) {
-
-    *pageCount = 1;
-    uint8_t numItems = 0;
-    CHECK_ERROR(parser_getNumItems(ctx, &numItems))
-    CHECK_APP_CANARY()
-
-    CHECK_ERROR(checkSanity(numItems, displayIdx))
-    cleanOutput(outKey, outKeyLen, outVal, outValLen);
-
-    return printTxnFields(ctx, displayIdx, outKey, outKeyLen,
-                          outVal, outValLen, pageIdx, pageCount);
-}

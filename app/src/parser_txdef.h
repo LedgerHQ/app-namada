@@ -48,7 +48,8 @@ extern "C" {
 #define DIVERSIFIER_LEN 11
 #define ALPHA_LEN 32
 #define MEMO_LEN 512
-#define PAYMENT_ADDR_LEN 32
+#define PKD_LEN 32
+#define PAYMENT_ADDR_LEN (DIVERSIFIER_LEN + PKD_LEN)
 #define OVK_LEN 32
 #define VOUT_LEN 60
 #define VIN_LEN 60
@@ -65,6 +66,7 @@ extern "C" {
 #define RANDOM_LEN 32
 #define IDENTIFIER_LEN 32
 #define TAG_LEN 1
+#define OVK_PLUS_CHECK_BYTE OVK_LEN + 1
 
 #define CMU_OFFSET CV_LEN
 #define EPK_OFFSET CMU_OFFSET + CMU_LEN
@@ -119,6 +121,7 @@ typedef struct {
     uint8_t has_epoch;
     uint64_t epoch;
     bytes_t bytes;
+    const char* symbol;
 } masp_asset_data_t;
 
 typedef struct {
@@ -222,6 +225,8 @@ typedef struct{
     bytes_t spends;
     bytes_t converts;
     bytes_t outputs;
+    uint32_t no_symbol_spends;
+    uint32_t no_symbol_outputs;
 }masp_sapling_builder_t;
 
 typedef struct {
@@ -261,6 +266,7 @@ typedef struct {
     bytes_t memoHash;
     const section_t *memoSection;
     uint8_t atomic;
+    bytes_t chain_id;
 } header_t;
 typedef struct {
     uint32_t sectionLen;
