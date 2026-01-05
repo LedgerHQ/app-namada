@@ -109,7 +109,7 @@ rust:
 
 .PHONY: rust_clean
 rust_clean:
-	cd rust && CARGO_HOME="$(CURDIR)/rust/.cargo" cargo clean
+	cd rust && RUSTC_BOOTSTRAP=1 CARGO_HOME="$(CURDIR)/rust/.cargo" cargo clean
 
 clean: rust_clean
 
