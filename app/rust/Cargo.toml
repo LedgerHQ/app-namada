@@ -1,3 +1,5 @@
+cargo-features = ["panic-immediate-abort"]
+
 [package]
 authors = ["Zondax AG <info@zondax.ch>"]
 name = "rslib"
@@ -28,7 +30,7 @@ panic-halt = "0.2.0"
 codegen-units = 1
 debug = false
 opt-level = "z"
-panic = "abort"
+panic = "immediate-abort"
 # lto = false
 # Settings below aimed to reduce
 # binary size due to code
@@ -41,7 +43,7 @@ lto = false
 codegen-units = 1
 debug=true
 opt-level = "z"
-panic = "abort"
+panic = "immediate-abort"
 strip = true
 
 [features]
